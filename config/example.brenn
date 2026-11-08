@@ -4,7 +4,7 @@
 //
 // `example_fit` compiles it against the two module roots a host resolves it
 // from, this bundle's and brenn's; `config_check` lowers it with the verb an
-// installer runs. Neither reads the key file or touches a path, so the paths
+// installer runs. Neither reads a key file or touches a path, so the paths
 // below are a deployment's shape, not files this checkout holds.
 use @fastmail-mail-read::*;
 
@@ -51,13 +51,29 @@ container sandbox {
   home_dir = "/var/lib/brenn/home";
 }
 
-/// The key file holds `Bearer <token>`, mode 0600, owned by the brenn user.
-/// The token is a Fastmail API token with read-only mail access. A key
-/// provider is read at boot, so changing this block takes a restart.
+/// One `account` per Fastmail account, each bound to the brenn user whose
+/// mail it is; a tool reads the calling user's. Each key file holds
+/// `Bearer <token>`, mode 0600, owned by the brenn user; the token is a
+/// Fastmail API token with read-only mail access. alice has two accounts and
+/// reads `alice` unless a call names `alice-work`; bob has one. Every user
+/// named must be registered before boot. A key provider is read at boot, so
+/// changing this block takes a restart.
 api_key_provider fastmail {
-  key_file = "/etc/brenn/fastmail/api-token";
   header = "Authorization";
   api_hosts = ["https://api.fastmail.com"];
+  account alice {
+    user = "alice";
+    key_file = "/etc/brenn/fastmail/alice";
+    default = true;
+  }
+  account alice-work {
+    user = "alice";
+    key_file = "/etc/brenn/fastmail/alice-work";
+  }
+  account bob {
+    user = "bob";
+    key_file = "/etc/brenn/fastmail/bob";
+  }
 }
 
 // Each live request has one nested call outstanding: the class's summed

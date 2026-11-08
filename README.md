@@ -3,8 +3,9 @@
 Fastmail tooling for [Brenn](https://github.com/rnortman/brenn): provider
 components, built outside brenn's repository with brenn's component rules,
 that let a Brenn agent reach a Fastmail account over JMAP (RFC 8620,
-RFC 8621) through Brenn's `api-request` tool. The account's API token lives in
-the deployment's key file and never reaches a component.
+RFC 8621) through Brenn's `api-request` tool. Each user's API token lives in
+a key file the operator places, bound to that user, and never reaches a
+component: an agent reads the Fastmail account of the user it is serving.
 
 The repository holds one component, `fastmail-mail-read`, which gives an
 agent four read-only tools: `FastmailMailboxes` (the account's mailboxes),
@@ -29,8 +30,8 @@ operator's to run.
 
 1. Install bazelisk, with git and make the only host prerequisites
    ([Building](docs/developing.md#building)).
-2. Create a Fastmail API token and confirm it reaches the account
-   ([Fastmail setup](#fastmail-setup), steps 1–3).
+2. For each user, create a Fastmail API token and confirm it reaches their
+   account ([Fastmail setup](#fastmail-setup), steps 1–3).
 3. Build the tree with `make bundle` and install it as a mount
    ([Adding the bundle to a deployment](#adding-the-bundle-to-a-deployment)).
 4. Add the configuration and run `brenn config-check` on it before
@@ -38,13 +39,16 @@ operator's to run.
 
 ## Fastmail setup
 
-1. In Fastmail's settings, under Privacy & Security → Integrations → API
-   tokens, create a token with read-only access to mail.
-2. Write `Bearer <token>` — the word, one space, the token, nothing else — to
-   a file owned by the user brenn runs as, mode `0600`. Brenn sends the
+1. Each user creates, in Fastmail's settings under Privacy & Security →
+   Integrations → API tokens, a token with read-only access to mail, one per
+   Fastmail account they want their agents to read.
+2. Write one file per account: `Bearer <token>` — the word, one space, the
+   token, nothing else — in a file owned by the user brenn runs as, mode
+   `0600`. Brenn sends the
    file's content verbatim as the `Authorization` header and refuses a key
    holding anything but visible ASCII and spaces.
-3. Confirm the token reaches the account and the session lists mail. The
+3. For each file, confirm the token reaches the account and the session
+   lists mail. The
    commands below are bash, and hand curl the header through a file
    descriptor, so the token never appears on curl's command line, where
    other local users and command-line audit logs could read it:
@@ -105,13 +109,31 @@ messaging {
 }
 ```
 
-The key provider. The key file is the one written above:
+The key provider: one `account` block per file written above, each naming
+the brenn user whose account it is. The user must be registered before the
+restart that adds the block, or boot refuses it. An account's name is what an
+agent passes as `account` to pick among a user's several accounts; mark one
+`default = true` to read it when the agent names none. A user with one
+account needs no `default`. Names are unique across the provider: two users'
+work accounts are `alice-work` and `bob-work`.
 
 ```
 api_key_provider fastmail {
-  key_file = "/etc/brenn/fastmail/api-token";
   header = "Authorization";
   api_hosts = ["https://api.fastmail.com"];
+  account alice {
+    user = "alice";
+    key_file = "/etc/brenn/fastmail/alice";
+    default = true;
+  }
+  account alice-work {
+    user = "alice";
+    key_file = "/etc/brenn/fastmail/alice-work";
+  }
+  account bob {
+    user = "bob";
+    key_file = "/etc/brenn/fastmail/bob";
+  }
 }
 ```
 
@@ -175,15 +197,23 @@ reload that changes either is refused.
 - **Time.** A tool call has 240 seconds end to end. Each step — the session
   read, the JMAP call, and for a thread a second JMAP call — is one nested
   call of at most 60 seconds.
-- **One key per deployment.** Every agent granted the tools reads the same
-  account with the same token; there is no per-user account. Its access is
-  the operator's.
-- **The caller needs a user.** brenn admits a userless caller's key call with
-  `GET` only, and every tool posts to `/jmap/api`, so the tools answer agents
-  acting for a user, not another component calling on its own account.
+- **A key per user.** Each user's token is a file the operator places and
+  an `account` block names; a user with no account is refused, naming the
+  operator. Adding, removing or rotating an account takes a restart. A user
+  with several accounts passes `account`, or the operator marks one
+  `default`. Every agent serving a user reaches all of that user's accounts.
+  A provider block that still holds one `key_file` is not refused: it serves
+  that one mailbox to every user's agent, though the tools describe it as the
+  user's own, and any call naming `account` fails. Rewrite it into `account`
+  blocks.
+- **The caller needs a user.** A userless caller, such as another component
+  calling on its own account, has no key to use: the instance's clauses name
+  no user to lend, so brenn refuses its first call. The tools answer agents
+  acting for a user.
 - **401 and 403 are answers.** Brenn does not refresh a key or read
   Fastmail's error bodies. A dead or narrowed token reaches the agent as a
-  refusal telling the operator to replace the key file and restart.
+  refusal telling the operator to replace that account's key file and
+  restart.
 
 ## Documentation
 
