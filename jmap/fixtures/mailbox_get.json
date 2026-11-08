@@ -1,0 +1,24 @@
+{
+  "accountId": "a1",
+  "state": "s1",
+  "list": [
+    {
+      "id": "m1",
+      "name": "Inbox",
+      "parentId": null,
+      "role": "inbox",
+      "sortOrder": 1,
+      "totalEmails": 120,
+      "unreadEmails": 3,
+      "totalThreads": 98,
+      "unreadThreads": 2
+    },
+    {
+      "id": "m2",
+      "name": "Receipts",
+      "parentId": "m1",
+      "role": null
+    }
+  ],
+  "notFound": []
+}

@@ -1,0 +1,73 @@
+{
+  "accountId": "a1",
+  "state": "s1",
+  "list": [
+    {
+      "id": "e3",
+      "threadId": "t1",
+      "mailboxIds": { "m1": true },
+      "keywords": {},
+      "size": 53000,
+      "receivedAt": "2026-11-07T09:30:00Z",
+      "sentAt": "2026-11-07T10:29:58+01:00",
+      "from": [{ "name": "Alice", "email": "alice@example.com" }],
+      "to": [{ "name": "Bob", "email": "bob@example.com" }],
+      "cc": [{ "name": null, "email": "carol@example.com" }],
+      "bcc": null,
+      "replyTo": [{ "name": "Alice", "email": "alice@example.com" }],
+      "subject": "Re: Lunch on Friday",
+      "preview": "Are we still on for Friday?",
+      "hasAttachment": true,
+      "messageId": ["m2@example.com"],
+      "inReplyTo": ["m1@example.com"],
+      "references": ["m0@example.com", "m1@example.com"],
+      "textBody": [
+        {
+          "partId": "1",
+          "blobId": "b1",
+          "size": 420,
+          "name": null,
+          "type": "text/plain",
+          "charset": "utf-8",
+          "disposition": null,
+          "cid": null,
+          "language": null,
+          "location": null
+        },
+        {
+          "partId": "2",
+          "blobId": "b2",
+          "size": 900,
+          "type": "text/html",
+          "charset": "utf-8",
+          "disposition": "inline"
+        }
+      ],
+      "attachments": [
+        {
+          "partId": "3",
+          "blobId": "b3",
+          "size": 51200,
+          "name": "menu.pdf",
+          "type": "application/pdf",
+          "charset": null,
+          "disposition": "attachment",
+          "cid": "menu@example.com"
+        }
+      ],
+      "bodyValues": {
+        "1": {
+          "value": "Are we still on for Friday?\n",
+          "isEncodingProblem": false,
+          "isTruncated": false
+        },
+        "2": {
+          "value": "<p>Are we still on",
+          "isEncodingProblem": true,
+          "isTruncated": true
+        }
+      }
+    }
+  ],
+  "notFound": []
+}

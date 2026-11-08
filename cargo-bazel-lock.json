@@ -1,0 +1,74 @@
+{
+  "checksum": "53036b5346f58ba633a48b3ad98c79442f749e829241ffbcd4aae6cc568f84b9",
+  "crates": {
+    "fastmail-jmap 0.1.0": {
+      "name": "fastmail-jmap",
+      "version": "0.1.0",
+      "package_url": null,
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "fastmail_jmap",
+            "crate_root": "src/lib.rs",
+            "srcs": {
+              "allow_empty": true,
+              "include": [
+                "**/*.rs"
+              ]
+            }
+          }
+        }
+      ],
+      "library_target_name": "fastmail_jmap",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "edition": "2024",
+        "version": "0.1.0"
+      },
+      "license": "Apache-2.0",
+      "license_ids": [
+        "Apache-2.0"
+      ],
+      "license_file": null
+    },
+    "fastmail-mail-read 0.1.0": {
+      "name": "fastmail-mail-read",
+      "version": "0.1.0",
+      "package_url": null,
+      "repository": null,
+      "targets": [],
+      "library_target_name": null,
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "edition": "2024",
+        "version": "0.1.0"
+      },
+      "license": "Apache-2.0",
+      "license_ids": [
+        "Apache-2.0"
+      ],
+      "license_file": null
+    }
+  },
+  "binary_crates": [],
+  "workspace_members": {
+    "fastmail-jmap 0.1.0": "jmap",
+    "fastmail-mail-read 0.1.0": "fastmail-mail-read"
+  },
+  "conditions": {
+    "wasm32-unknown-unknown": [
+      "wasm32-unknown-unknown"
+    ],
+    "x86_64-unknown-linux-gnu": [
+      "x86_64-unknown-linux-gnu"
+    ]
+  },
+  "direct_deps": [],
+  "direct_dev_deps": [],
+  "unused_patches": []
+}

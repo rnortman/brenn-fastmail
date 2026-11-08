@@ -1,0 +1,22 @@
+# The cargo view of this repository. Bazel-only — cargo never builds it; the
+# manifests and the lockfile exist so `crate_universe` can resolve the one
+# third-party hub this repository owns.
+#
+# No member lists a dependency. brenn-guest's API is expressed in serde types,
+# so every crate's serde and serde_json come from brenn's guest instance
+# (`@brenn//brenn-wasm/components/guest:{serde,serde_json}`); a derive from any
+# other instance satisfies none of brenn-guest's port bounds.
+[workspace]
+members = ["fastmail-mail-read", "jmap"]
+resolver = "3"
+
+# Inherited by every member. Declared even though nothing here is published:
+# the licence is a fact about the source, not about the distribution channel.
+# `version` equals `module(version = ...)` in MODULE.bazel and `rust-version`
+# the major.minor of RUST_VERSION there; //tools/pins:pins_test checks both.
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/rnortman/brenn-fastmail"
+rust-version = "1.95"

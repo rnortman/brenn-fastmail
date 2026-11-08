@@ -1,0 +1,11 @@
+[package]
+name = "fastmail-jmap"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "fastmail_jmap"
+path = "src/lib.rs"

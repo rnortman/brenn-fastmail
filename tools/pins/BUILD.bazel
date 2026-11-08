@@ -1,0 +1,21 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+# Holds the version pins that live in more than one file equal.
+sh_test(
+    name = "pins_test",
+    size = "small",
+    srcs = ["pins_test.sh"],
+    data = [
+        "//:Cargo.toml",
+        "//:MODULE.bazel",
+        "//:clippy.toml",
+        "//:rust-toolchain.toml",
+    ],
+    env = {
+        "CARGO_TOML": "$(rlocationpath //:Cargo.toml)",
+        "CLIPPY_TOML": "$(rlocationpath //:clippy.toml)",
+        "MODULE_BAZEL": "$(rlocationpath //:MODULE.bazel)",
+        "RUST_TOOLCHAIN_TOML": "$(rlocationpath //:rust-toolchain.toml)",
+    },
+    deps = ["@bazel_tools//tools/bash/runfiles"],
+)

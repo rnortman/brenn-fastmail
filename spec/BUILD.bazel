@@ -1,0 +1,16 @@
+# The module root: the authored specifications, flat, which is exactly the
+# layout a bundle's `modules/` has once installed. A deployment's
+# `use @fastmail-mail-read::*;` resolves against a directory of this shape.
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["fastmail-mail-read.brenn"])
+
+# The root as one label, for the fit checks and for anyone assembling a module
+# root out of several. A glob: every .brenn file here is shipped by the
+# bundle, so an unshipped one fails the bundle's set-equality check rather
+# than silently becoming importable vocabulary.
+filegroup(
+    name = "modules",
+    srcs = glob(["*.brenn"]),
+)

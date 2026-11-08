@@ -1,0 +1,66 @@
+/// A Fastmail account's mail read for an assistant over JMAP (RFC 8620 and
+/// RFC 8621), as native tools, each answered by `api-request` calls against
+/// the `api_key_provider` the instance names. The deployment's API token
+/// never reaches this component; `api-request` attaches it host-side. Every
+/// tool reads; nothing here writes to the account.
+///
+/// Every capability is load-bearing: `config` names the provider and the
+/// host, without which no call can be addressed; `store` carries each
+/// request's state between the activation that issues its nested call and
+/// the one that receives the answer; `tools` is the authority to call
+/// `api-request`; `provides` is what makes the tools exist; `log` records each
+/// step's tool, status and size — never a body or a header.
+///
+/// The instance's `config = { ... };` map is flat: `provider` is the
+/// `api_key_provider` name; `host` is the `host[:port]` Fastmail's JMAP API
+/// is called on (`api.fastmail.com`), which `api-request` matches against that
+/// provider's `api_hosts` and the instance's clauses must admit, for `GET
+/// /jmap/session` and `POST /jmap/api`. A missing or malformed key fails every
+/// activation, naming the key.
+///
+/// Size the instance's result inbox with a `channel at
+/// "brenn:tool-results/<slug>"` block: each live request has at most one
+/// nested call outstanding, so the window must hold Σ max_concurrency results,
+/// twice over for a re-delivered result — `retain_depth ≥ 2 × Σ`, rounded up
+/// to a power of two. This class's Σ is 12, so 32 holds it; the family default
+/// of 16 does not.
+///
+/// Every nested answer crosses the bus as a tool result, so Fastmail's body —
+/// a JSON string inside `api-request`'s value, inside the result envelope —
+/// must fit `[messaging] max_body_bytes` (64 KiB default). Either raise that
+/// cap to carry the key provider's `max_response_bytes` (256 KiB default) with
+/// a margin for escaping, `messaging { max_body_bytes = 393216; }`, or lower
+/// `max_response_bytes` to fit the default cap. A read at the default
+/// `max_body_bytes` of 12000 fits the default cap; one near its ceiling of
+/// 60000, or a long search or thread, needs the raised cap. An answer over the
+/// bus cap never reaches this component as Fastmail's answer.
+component FastmailMailRead {
+  abi = processor;
+  requires = [log, store, config, tools, provides];
+  in tool-results;
+  in tool-requests;
+  provide fastmail-mailboxes {
+    mcp_name = "FastmailMailboxes";
+    description = "List the mailboxes (folders) of the deployment's Fastmail account. Takes no arguments. Answers `account_id` and `mailboxes`, each with its JMAP `id`, `name`, `role` (`inbox`, `sent`, `drafts`, `trash`, `junk`, `archive`, … when it has one), `parent_id` (when nested), `total_emails`, `unread_emails`, `total_threads` and `unread_threads`, in Fastmail's display order. The other Fastmail tools name mailboxes by these ids: `FastmailSearch` takes one as `mailbox`, and its messages list theirs as `mailbox_ids`. Nothing is written. A refusal saying Fastmail refused the deployment's token (HTTP 401 or 403) is the operator's to fix, not the caller's.";
+    input_schema = """{ "type": "object", "properties": {}, "additionalProperties": false }""";
+    max_concurrency = 2;
+  }
+  provide fastmail-search {
+    mcp_name = "FastmailSearch";
+    description = "Search the deployment's Fastmail account for messages, newest first. Every argument is optional and the given ones must all match: `text` (anywhere in the message), `from`, `to`, `subject` (each free text, at most 1024 characters), `mailbox` (a mailbox `id` from `FastmailMailboxes`), `after` and `before` (each a date, 2026-11-08, meaning its midnight UTC, or a UTC instant to the second, 2026-11-08T10:00:00Z; `after` includes its instant, `before` excludes it), `keyword` and `not_keyword` (a keyword the message has or lacks: `$seen` for read, `$flagged` for flagged, `$answered`, `$draft`, or a label keyword), `has_attachment` (true or false). `limit` (1-25, default 10) caps the messages and `position` (0-10000, default 0) skips that many. Answers `position`, `total` (how many match), `messages` and, when more match, `next_position` to pass back as `position`. Each message has its `id` (for `FastmailRead`), `thread_id` (for `FastmailThread`), `from` and `to` (at most 5 addresses each, `recipients_omitted` counting the rest), `subject`, `received_at`, `size`, `has_attachment`, `keywords`, `mailbox_ids` (resolve with `FastmailMailboxes`) and a `preview` of its text. A refusal naming `max_response_bytes` or `max_body_bytes` means the answer was too large: ask for fewer with `limit`. A refusal saying Fastmail refused the deployment's token (HTTP 401 or 403) is the operator's to fix. Nothing is written.";
+    input_schema = """{ "type": "object", "properties": { "text": { "type": "string", "minLength": 1, "maxLength": 1024, "pattern": "[^\\s\\u0085]" }, "from": { "type": "string", "minLength": 1, "maxLength": 1024, "pattern": "[^\\s\\u0085]" }, "to": { "type": "string", "minLength": 1, "maxLength": 1024, "pattern": "[^\\s\\u0085]" }, "subject": { "type": "string", "minLength": 1, "maxLength": 1024, "pattern": "[^\\s\\u0085]" }, "mailbox": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,255}$" }, "after": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)?$" }, "before": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)?$" }, "keyword": { "type": "string", "pattern": "^[A-Za-z0-9$_.-]{1,255}$" }, "not_keyword": { "type": "string", "pattern": "^[A-Za-z0-9$_.-]{1,255}$" }, "has_attachment": { "type": "boolean" }, "limit": { "type": "integer", "minimum": 1, "maximum": 25 }, "position": { "type": "integer", "minimum": 0, "maximum": 10000 } }, "additionalProperties": false }""";
+    max_concurrency = 4;
+  }
+  provide fastmail-read {
+    mcp_name = "FastmailRead";
+    description = "Read one message of the deployment's Fastmail account. `id` is a message `id` from `FastmailSearch` or `FastmailThread`. `max_body_bytes` (200-60000, default 12000) caps the text read. Answers the message's `id`, `thread_id`, `from`, `to`, `cc`, `bcc`, `reply_to` (at most 50 addresses each, `recipients_omitted` counting the rest), `subject`, `received_at`, `sent_at`, `size`, `has_attachment`, `keywords`, `mailbox_ids` (resolve with `FastmailMailboxes`), `preview`, `message_id`, `in_reply_to`, `references` (the last 20), and its `text`: the message's text parts in order, an HTML-only part rendered to plain text with links' addresses dropped, an inline image, audio or video part as a bracketed placeholder naming its type, name and size, `text_source` saying which (`text/plain`, `text/html`, `mixed` or `none`). `body_truncated` is true when the text was cut at `max_body_bytes`; `encoding_problem` is true when Fastmail could not decode part of it. Bodies are text only: `attachments` lists each attachment's `name`, `content_type`, `size`, `disposition`, `blob_id` and whether it is `inline` (each inline media part shown in the text among them), and none is fetched. An `id` Fastmail does not know is refused. A refusal naming `max_response_bytes` or `max_body_bytes` means the answer was too large: ask for a smaller `max_body_bytes`. A refusal saying Fastmail refused the deployment's token (HTTP 401 or 403) is the operator's to fix. Nothing is written; reading does not mark the message read.";
+    input_schema = """{ "type": "object", "properties": { "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,255}$" }, "max_body_bytes": { "type": "integer", "minimum": 200, "maximum": 60000 } }, "required": ["id"], "additionalProperties": false }""";
+    max_concurrency = 4;
+  }
+  provide fastmail-thread {
+    mcp_name = "FastmailThread";
+    description = "Read a conversation of the deployment's Fastmail account as message summaries, oldest first. `id` is a `thread_id` from `FastmailSearch`. `max` (1-100, default 30) caps the messages fetched: the newest `max` of the thread. Answers the thread's `id`, `message_count` (every message in it), `messages_omitted` (the older messages not fetched, and any deleted while it was read) and `messages`, each as `FastmailSearch` gives it; read one in full with `FastmailRead`. A thread `id` Fastmail does not know is refused. A refusal naming `max_response_bytes` or `max_body_bytes` means the answer was too large: ask for a smaller `max`. A refusal saying Fastmail refused the deployment's token (HTTP 401 or 403) is the operator's to fix. Nothing is written.";
+    input_schema = """{ "type": "object", "properties": { "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,255}$" }, "max": { "type": "integer", "minimum": 1, "maximum": 100 } }, "required": ["id"], "additionalProperties": false }""";
+    max_concurrency = 2;
+  }
+}

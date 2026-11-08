@@ -1,0 +1,234 @@
+"""Fastmail tooling for Brenn, built outside brenn with brenn's rules.
+
+Provider components that reach Fastmail over JMAP through Brenn's
+`api-request` tool, packaged as a bundle a deployment installs beside brenn's
+own release.
+
+Five facts are the consumer's to state, because bzlmod reads them from the root
+module only: the brenn commit this repository builds against, the Rust
+toolchain (brenn's own declaration is ignored from a dependency), the `fltk`
+git override (a `git_override` in a dependency is ignored too), the
+`aspect_rules_js` override, and the crate hubs' names (two modules may not
+both name a hub alike, so every hub here is `fastmail_*`).
+
+Third-party Rust dependencies are not declared here: `crate.from_cargo` reads
+`Cargo.toml` + `Cargo.lock`. Every toolchain and tool is pinned and fetched by
+checksum, so a build needs nothing from the host but bazelisk.
+"""
+
+module(
+    name = "brenn_fastmail",
+    version = "0.1.0",
+)
+
+bazel_dep(name = "platforms", version = "1.1.0")
+bazel_dep(name = "rules_rust", version = "0.73.0")
+
+# `sh_binary` and `sh_test`, for the tool wrappers and the gates that run a
+# shell script. Bazel no longer carries the shell rules natively, and a load
+# from a dependency's transitive dep is not visible to this module.
+bazel_dep(name = "rules_shell", version = "0.6.1")
+
+# BUILD-file formatting and its test. A standalone tool, outside brenn's graph.
+bazel_dep(name = "buildifier_prebuilt", version = "10.1.0", dev_dependency = True)
+
+# --- brenn ----------------------------------------------------------------
+# Where every rule, macro and host crate here comes from. Build-time contracts
+# are hard-cut at this pin: a bump is when a macro rename or a changed generated
+# shape is paid for, and never between bumps.
+#
+# The fetch is anonymous, so the commit has to be one brenn's public remote
+# serves. Work against a brenn that remote does not serve with the
+# `.bazelrc.user` override line the README describes, never by editing this.
+#
+# When this pin moves, re-copy from brenn at the new commit: RUST_VERSION
+# below, `.bazelversion`, and the fltk commit. Nothing checks them
+# mechanically; a mismatch fails at compile or at module resolution.
+bazel_dep(name = "brenn", version = "")
+git_override(
+    module_name = "brenn",
+    commit = "83e8e55fc4a953156361af8c0ce778e4b7a2faeb",
+    remote = "https://github.com/rnortman/brenn.git",
+)
+
+# fltk, restated at brenn's commit. brenn's `//brenn-dsl:dsl_cli` — which
+# scaffolds the port module and runs the grant-parity gate — links fltk's
+# runtime crates, and fltk's module() declares no version and is in no
+# registry, so only a root-module `git_override` can supply it.
+bazel_dep(name = "fltk", version = "")
+git_override(
+    module_name = "fltk",
+    commit = "d3e46fd90e380c58e42c77126f83b6ff27cd4a1f",
+    remote = "https://github.com/rnortman/fltk.git",
+)
+
+# rules_js, ahead of its releases. Nothing here ships a surface kind, so
+# nothing here runs brenn's jco; the override is stated anyway because it is
+# one of the facts a consumer of brenn's component kit owns, and a surface
+# component added later needs it. Through 3.4.1, `npm_package_store` computes
+# the store's relative link targets one character short when the store sits in
+# an external repository's sub-package; upstream fixed it in the commit pinned
+# below, and a module override in a dependency is ignored.
+bazel_dep(name = "aspect_rules_js", version = "3.4.0")
+git_override(
+    module_name = "aspect_rules_js",
+    commit = "048c545230815b7b1f127f2880ec11f1e0878dc1",
+    remote = "https://github.com/aspect-build/rules_js.git",
+)
+
+# --- Rust toolchain -------------------------------------------------------
+# Declared here because rules_rust reads toolchain tags from the root module
+# only. Same version as brenn's at the pin — brenn's crates compile under this
+# toolchain — with the wasm32 target added, because that is what a component
+# builds for. rust-toolchain.toml states the same version for rust-analyzer;
+# //tools/pins:pins_test holds the two equal.
+RUST_VERSION = "1.95.0"
+
+rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
+rust.toolchain(
+    edition = "2024",
+    extra_target_triples = ["wasm32-unknown-unknown"],
+    versions = [RUST_VERSION],
+)
+use_repo(rust, "rust_toolchains")
+
+register_toolchains("@rust_toolchains//:all")
+
+# --- Third-party crates ---------------------------------------------------
+# This repository's own hub, empty today: every crate here takes `serde` and
+# `serde_json` from brenn's guest instance, because a derive from any other
+# instance satisfies none of brenn-guest's port bounds. The hub exists so the
+# next dependency has a place to go. The host triple is listed with wasm32
+# because crate_universe resolves features by running cargo on an
+# execution-platform triple.
+#
+# `cargo-bazel-lock.json` is the rendered, reproducible view of each
+# Cargo.lock. Re-pin after any dependency change with `make repin`.
+crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
+crate.from_cargo(
+    name = "fastmail_crates",
+    cargo_lockfile = "//:Cargo.lock",
+    lockfile = "//:cargo-bazel-lock.json",
+    manifests = ["//:Cargo.toml"],
+    supported_platform_triples = [
+        "wasm32-unknown-unknown",
+        "x86_64-unknown-linux-gnu",
+    ],
+)
+
+# brenn-scrub, from crates.io, in a hub of its own: a build tool nothing links
+# must not join the workspace hub's feature unification. `repositories` is
+# required, not optional: a crate.spec without it applies to every hub in the
+# module. Pinned by the two lock files under tools/scrub.
+crate.spec(
+    package = "brenn-scrub",
+    repositories = ["fastmail_scrub_crates"],
+    version = "=0.2.0",
+)
+crate.annotation(
+    crate = "brenn-scrub",
+    gen_binaries = ["brenn-scrub"],
+    repositories = ["fastmail_scrub_crates"],
+)
+crate.from_specs(
+    name = "fastmail_scrub_crates",
+    cargo_lockfile = "//tools/scrub:Cargo.lock",
+    lockfile = "//tools/scrub:cargo-bazel-lock.json",
+)
+
+# allthechanges, the changelog and TODO fragment tool, in a hub of its own for
+# the same reason. Pinned by the two lock files under tools/allthechanges.
+crate.spec(
+    package = "allthechanges",
+    repositories = ["fastmail_allthechanges_crates"],
+    version = "=0.3.0",
+)
+crate.annotation(
+    crate = "allthechanges",
+    gen_binaries = ["allthechanges"],
+    repositories = ["fastmail_allthechanges_crates"],
+)
+crate.from_specs(
+    name = "fastmail_allthechanges_crates",
+    cargo_lockfile = "//tools/allthechanges:Cargo.lock",
+    lockfile = "//tools/allthechanges:cargo-bazel-lock.json",
+)
+use_repo(crate, "fastmail_allthechanges_crates", "fastmail_crates", "fastmail_scrub_crates")
+
+# --- gitleaks -------------------------------------------------------------
+# The release brenn-scrub 0.2.0 pins. brenn-scrub refuses any other gitleaks
+# version, so this moves together with the crate.spec above.
+GITLEAKS_VERSION = "8.30.0"
+
+GITLEAKS_SHA256_X86_64 = "79a3ab579b53f71efd634f3aaf7e04a0fa0cf206b7ed434638d1547a2470a66e"
+
+GITLEAKS_SHA256_AARCH64 = "b4cbbb6ddf7d1b2a603088cd03a4e3f7ce48ee7fd449b51f7de6ee2906f5fa2f"
+
+http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+http_archive(
+    name = "gitleaks_x86_64_linux",
+    build_file = "//tools/scrub:gitleaks.BUILD.bazel",
+    sha256 = GITLEAKS_SHA256_X86_64,
+    url = "https://github.com/gitleaks/gitleaks/releases/download/v" + GITLEAKS_VERSION +
+          "/gitleaks_" + GITLEAKS_VERSION + "_linux_x64.tar.gz",
+)
+
+http_archive(
+    name = "gitleaks_aarch64_linux",
+    build_file = "//tools/scrub:gitleaks.BUILD.bazel",
+    sha256 = GITLEAKS_SHA256_AARCH64,
+    url = "https://github.com/gitleaks/gitleaks/releases/download/v" + GITLEAKS_VERSION +
+          "/gitleaks_" + GITLEAKS_VERSION + "_linux_arm64.tar.gz",
+)
+
+# --- Hermetic C toolchain -------------------------------------------------
+# rustc links through a C toolchain, and Bazel's auto-detected host gcc puts
+# machine-specific facts into every action key. A pinned LLVM release plus a
+# pinned Debian sysroot makes the build byte-identical across machines and
+# keeps the host compiler out of it. Same block as brenn's MODULE.bazel.
+#
+# The sysroot is Chromium's bullseye amd64 sysroot (glibc 2.31): binaries link
+# against it and run on any newer glibc. `cxx_include_layout = debian` tells
+# the toolchain where that sysroot keeps libstdc++ and the gcc runtime.
+#
+# `dev_dependency`: registration is unconditional, and a dependent module
+# brings its own.
+bazel_dep(name = "toolchains_llvm", version = "1.12.0", dev_dependency = True)
+
+sysroot = use_repo_rule("@toolchains_llvm//toolchain:sysroot.bzl", "sysroot")
+
+sysroot(
+    name = "org_chromium_sysroot_linux_x64",
+    dev_dependency = True,
+    sha256 = "52d61d4446ffebfaa3dda2cd02da4ab4876ff237853f46d273e7f9b666652e1d",
+    # Chromium serves each sysroot tarball under its own sha256, no filename.
+    urls = ["https://commondatastorage.googleapis.com/chrome-linux-sysroot/52d61d4446ffebfaa3dda2cd02da4ab4876ff237853f46d273e7f9b666652e1d"],
+)
+
+llvm = use_extension(
+    "@toolchains_llvm//toolchain/extensions:llvm.bzl",
+    "llvm",
+    dev_dependency = True,
+)
+llvm.toolchain(
+    name = "llvm_toolchain",
+    cxx_include_layout = {"linux-x86_64": "debian"},
+    # The binaries must load nothing from the host beyond libz, libstdc++,
+    # libgcc_s and glibc. LLVM 22's `lld` loaded the host's `libxml2.so.2`,
+    # which Ubuntu 26.04 no longer ships, and every host link in this module
+    # runs that linker. A bump ahead of brenn's needs `readelf -d` on `bin/lld`
+    # and `bin/clang-<N>` of the fetched distribution.
+    llvm_version = "23.1.4",
+)
+llvm.sysroot(
+    name = "llvm_toolchain",
+    label = "@org_chromium_sysroot_linux_x64//sysroot",
+    targets = ["linux-x86_64"],
+)
+use_repo(llvm, "llvm_toolchain", "llvm_toolchain_llvm")
+
+register_toolchains(
+    "@llvm_toolchain//:all",
+    dev_dependency = True,
+)

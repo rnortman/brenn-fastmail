@@ -1,0 +1,9 @@
+# The component packages this repository ships, one name per line; blank lines
+# and lines starting with `#` are ignored. A package name is what a
+# configuration imports a class from — `use @<name>::*;` — and the directory
+# the bundle stages as `components/<name>/`.
+#
+# Must match the set of `component_package` targets in BUILD.bazel exactly;
+# `deployed_components_test` enforces this. A new package is added in both
+# places or the build fails.
+fastmail-mail-read

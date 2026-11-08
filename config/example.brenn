@@ -1,0 +1,100 @@
+// The document a deployer copies from: the Fastmail key provider, the
+// `fastmail-mail-read` instance with the two clauses it calls through, and an
+// agent granted its four tools.
+//
+// `example_fit` compiles it against the two module roots a host resolves it
+// from, this bundle's and brenn's; `config_check` lowers it with the verb an
+// installer runs. Neither reads the key file or touches a path, so the paths
+// below are a deployment's shape, not files this checkout holds.
+use @fastmail-mail-read::*;
+
+server {
+  bind_address = "127.0.0.1:3000";
+  static_dir = "/opt/brenn/current/frontend";
+  secure_cookies = true;
+  public_url = "https://brenn.example.com";
+}
+
+database {
+  path = "/var/lib/brenn/brenn.db";
+}
+
+logging {
+  log_dir = "/var/log/brenn";
+  console_level = info;
+  file_level = info;
+}
+
+claude_defaults {
+  mcp_script_path = "/opt/brenn/current/mcp/brenn_mcp.py";
+  model = "sonnet";
+}
+
+/// A read's answer is Fastmail's JSON body as a string inside the nested
+/// call's result inside the tool-result envelope, so escaping grows it. This
+/// carries `api-request`'s default 256 KiB `max_response_bytes` with margin.
+/// Lowering `max_response_bytes` instead is the other way to fit.
+messaging {
+  max_body_bytes = 393216;
+}
+
+// Every deployment publishes its surface index here, with or without a page;
+// config-check refuses a document that leaves the channel undeclared.
+channel surface_index at "brenn:surface.index" {
+  push_depth = 1;
+  retain_depth = 1;
+  standing_retain_depth = 1;
+}
+
+container sandbox {
+  image = "example.com/cc:latest";
+  home_dir = "/var/lib/brenn/home";
+}
+
+/// The key file holds `Bearer <token>`, mode 0600, owned by the brenn user.
+/// The token is a Fastmail API token with read-only mail access. A key
+/// provider is read at boot, so changing this block takes a restart.
+api_key_provider fastmail {
+  key_file = "/etc/brenn/fastmail/api-token";
+  header = "Authorization";
+  api_hosts = ["https://api.fastmail.com"];
+}
+
+// Each live request has one nested call outstanding: the class's summed
+// `max_concurrency` (12) results can arrive between two activations, twice
+// over if one is re-delivered, so `retain_depth` is at least 24, rounded up.
+channel at "brenn:tool-results/fastmail_mail" {
+  push_depth = 1;
+  retain_depth = 32;
+  standing_retain_depth = 32;
+  noise = alarm;
+}
+
+/// Every tool reads the session document, then posts one JMAP envelope; the
+/// thread tool posts a second. The API path has no trailing slash: brenn
+/// refuses a clause or a request path with an empty segment.
+new fastmail_mail: FastmailMailRead {
+  grants = [log, store, config, tools, provides];
+  store_path = "/var/lib/brenn/stores/fastmail_mail";
+  tool api-request {
+    allow { provider = "fastmail"; method = "GET";  host = "api.fastmail.com"; path = "/jmap/session"; }
+    allow { provider = "fastmail"; method = "POST"; host = "api.fastmail.com"; path = "/jmap/api"; }
+    rate_limit { burst = 20; sustained_per_minute = 60; }
+  }
+  config = {
+    provider = "fastmail",
+    host = "api.fastmail.com"
+  };
+}
+
+agent Assistant() {
+  working_dir = ".";
+  container = "sandbox";
+  container_working_dir = "/work";
+  tool fastmail-mailboxes {}
+  tool fastmail-search {}
+  tool fastmail-read {}
+  tool fastmail-thread {}
+}
+
+new assistant: Assistant();

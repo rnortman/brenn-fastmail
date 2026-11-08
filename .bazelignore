@@ -1,0 +1,10 @@
+# Directories Bazel must not traverse. No wildcards are permitted here, so
+# each path is spelled out; the convenience symlinks are named after
+# --symlink_prefix in .bazelrc, and the last of them after the checkout
+# directory itself.
+.git
+.bazel-bin
+.bazel-brenn-fastmail
+.bazel-out
+.bazel-testlogs
+target

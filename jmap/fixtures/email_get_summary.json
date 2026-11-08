@@ -1,0 +1,29 @@
+{
+  "accountId": "a1",
+  "state": "s1",
+  "list": [
+    {
+      "id": "e1",
+      "threadId": "t1",
+      "mailboxIds": { "m1": true },
+      "keywords": { "$seen": true, "$flagged": true },
+      "size": 2048,
+      "receivedAt": "2026-11-07T09:30:00Z",
+      "from": [{ "name": "Alice", "email": "alice@example.com" }],
+      "to": [
+        { "name": null, "email": "bob@example.com" },
+        { "email": "carol@example.com" }
+      ],
+      "subject": "Lunch on Friday",
+      "preview": "Are we still on for",
+      "hasAttachment": false
+    },
+    {
+      "id": "e2",
+      "threadId": null,
+      "from": null,
+      "subject": null
+    }
+  ],
+  "notFound": ["e9"]
+}

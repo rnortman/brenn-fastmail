@@ -1,0 +1,24 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Built for the host here and again for wasm32 by the component that depends
+# on it, through the component rule's platform transition. Its only
+# dependencies are brenn's guest serde instance, which builds for both.
+rust_library(
+    name = "fastmail_jmap",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "fastmail_jmap",
+    edition = "2024",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@brenn//brenn-wasm/components/guest:serde",
+        "@brenn//brenn-wasm/components/guest:serde_json",
+    ],
+)
+
+# Fixtures are read with include_str!, so they are compile inputs.
+rust_test(
+    name = "fastmail_jmap_test",
+    size = "small",
+    compile_data = glob(["fixtures/*.json"]),
+    crate = ":fastmail_jmap",
+)

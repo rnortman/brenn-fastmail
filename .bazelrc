@@ -1,0 +1,50 @@
+# Bazel flags for this repository. bzlmod only; there is no WORKSPACE file.
+
+# --- brenn's module graph ---
+# The consumer-side half of brenn's serde coherence: fltk-serde-core must link
+# the serde instance `@brenn//brenn-dsl` links, or `dsl_cli` — built here from
+# source to scaffold the port module and run the grant-parity gate — fails to
+# compile with mismatched-instance errors.
+build --@fltk//crates/fltk-serde-core:serde=@brenn//brenn-dsl:fltk_serde
+
+# Bazel's convenience symlinks, named so .gitignore and .bazelignore can list
+# them.
+build --symlink_prefix=.bazel-
+
+# Disable Aspect rules_js telemetry inherited from brenn's module graph.
+common --repo_env=DO_NOT_TRACK=1
+
+# --- Correctness posture ---
+build --incompatible_strict_action_env
+common --incompatible_disallow_empty_glob
+test --test_output=errors
+test --test_summary=terse
+common --test_env=RUST_BACKTRACE=1
+# Local default refreshes the module lockfile; CI overrides with
+# --lockfile_mode=error so resolution drift is a red build there.
+common --lockfile_mode=update
+
+# --- Rust ---
+# The repository's own formatter and linter configuration, for the aspects and
+# for the runners alike (rules_rust otherwise uses its own .rustfmt.toml).
+build --@rules_rust//rust/settings:rustfmt.toml=//:rustfmt.toml
+build --@rules_rust//rust/settings:clippy.toml=//:clippy.toml
+# The lint lanes, as aspects over whatever targets are asked for. Behind a
+# config so an inner-loop build does not pay for them; `make check` turns
+# them on. Warnings are denied: a warning the gate tolerates is a warning
+# nobody reads.
+build:lint --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect,@rules_rust//rust:defs.bzl%rustfmt_aspect
+build:lint --output_groups=+clippy_checks,+rustfmt_checks
+build:lint --@rules_rust//rust/settings:clippy_flags=-Dwarnings
+
+# --- Release ---
+build:release --compilation_mode=opt
+
+# Per-developer flags, gitignored. Two uses: flags about one machine (caches,
+# output styling), and the brenn override — a
+# `common --override_module=brenn=<checkout>` line that points every bazel
+# invocation, the git hooks' included, at a local brenn. Imported last, so a
+# line there overrides a line here for the same command; a `common` line there
+# does not override a `build` or `test` line here, because Bazel applies every
+# `common` line before any `build` line.
+try-import %workspace%/.bazelrc.user

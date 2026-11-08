@@ -1,0 +1,7 @@
+# For the tools that run outside Bazel: rust-analyzer, and nothing in the
+# gate. Must equal RUST_VERSION in MODULE.bazel; //tools/pins:pins_test
+# checks. No `targets`: the wasm32 target is Bazel's to fetch.
+[toolchain]
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
