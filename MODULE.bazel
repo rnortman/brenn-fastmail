@@ -39,7 +39,7 @@ bazel_dep(name = "buildifier_prebuilt", version = "10.1.0", dev_dependency = Tru
 #
 # The fetch is anonymous, so the commit has to be one brenn's public remote
 # serves. Work against a brenn that remote does not serve with the
-# `.bazelrc.user` override line the README describes, never by editing this.
+# `.bazelrc.user` override line docs/developing.md describes, never by editing this.
 #
 # When this pin moves, re-copy from brenn at the new commit: RUST_VERSION
 # below, `.bazelversion`, and the fltk commit. Nothing checks them
@@ -81,13 +81,17 @@ git_override(
 # only. Same version as brenn's at the pin — brenn's crates compile under this
 # toolchain — with the wasm32 target added, because that is what a component
 # builds for. rust-toolchain.toml states the same version for rust-analyzer;
-# //tools/pins:pins_test holds the two equal.
+# //tools/pins:pins_test holds the two equal. `rustfmt_version` is stated
+# because the extension otherwise defaults it to a nightly, which would give
+# the rustfmt aspect and the write-time hook a different formatter from the
+# one rust-toolchain.toml names for rust-analyzer.
 RUST_VERSION = "1.95.0"
 
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(
     edition = "2024",
     extra_target_triples = ["wasm32-unknown-unknown"],
+    rustfmt_version = RUST_VERSION,
     versions = [RUST_VERSION],
 )
 use_repo(rust, "rust_toolchains")

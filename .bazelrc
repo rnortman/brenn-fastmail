@@ -15,7 +15,17 @@ build --symlink_prefix=.bazel-
 common --repo_env=DO_NOT_TRACK=1
 
 # --- Correctness posture ---
+# Sandboxed actions cannot write the source tree or read what they did not
+# declare.
+build --spawn_strategy=sandboxed
+# The one exception: a test tagged no-sandbox runs locally. //:buildifier_test
+# is that test; it walks the whole workspace, which no sandbox can show it.
+test --strategy=TestRunner=sandboxed,local
 build --incompatible_strict_action_env
+# No network for build and test actions. A target that genuinely needs the
+# network is tagged `requires-network`, and there should be none: every
+# fetch is a repository rule, pinned by checksum.
+build --sandbox_default_allow_network=false
 common --incompatible_disallow_empty_glob
 test --test_output=errors
 test --test_summary=terse
@@ -23,6 +33,13 @@ common --test_env=RUST_BACKTRACE=1
 # Local default refreshes the module lockfile; CI overrides with
 # --lockfile_mode=error so resolution drift is a red build there.
 common --lockfile_mode=update
+
+# --- Caching ---
+# `common`, so a `common --disk_cache` in .bazelrc.user (CI writes one)
+# replaces it.
+common --disk_cache=~/.cache/brenn-fastmail-bazel-disk
+common --experimental_disk_cache_gc_max_size=10G
+common --experimental_disk_cache_gc_max_age=30d
 
 # --- Rust ---
 # The repository's own formatter and linter configuration, for the aspects and

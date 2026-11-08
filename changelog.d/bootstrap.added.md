@@ -14,4 +14,7 @@
   Fastmail's errors in Fastmail's own words.
 - The repository itself: a Bazel build pinned to a specific brenn commit, a
   secret scanner (`brenn-scrub`) on every write, commit and push, and one
-  `make check` gate shared by the git hooks and CI.
+  `make check` gate shared by the git hooks and CI. Build and test actions
+  are configured to run sandboxed and without network access, except the
+  formatting check for Bazel files, which reads the whole tree and runs
+  unsandboxed. `docs/developing.md` is the developer's guide.

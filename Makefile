@@ -7,7 +7,7 @@
 #
 # No flag here points the build at a local brenn: that override is a line in
 # the gitignored `.bazelrc.user`, which every bazel invocation reads — these
-# recipes, the git hooks and the write hook alike. See README.md.
+# recipes, the git hooks and the write hook alike. See docs/developing.md.
 
 # Recipes run under bash with -e and pipefail, so a failing command anywhere in a
 # chain or a pipeline fails the target. Without this a broken step degrades into a
@@ -53,6 +53,9 @@ help:
 #
 # The notice is not a gate: a run against a local brenn says nothing about the
 # committed pin, and nothing on the command line shows that it is one.
+#
+# TODO(correctness-sandbox-network-posture-unenforced): no step checks that
+# actions ran sandboxed and without network; .bazelrc only asks for it.
 .PHONY: check
 check:
 	@if [[ -f .bazelrc.user ]] && grep -q 'override_module=brenn' .bazelrc.user; then \

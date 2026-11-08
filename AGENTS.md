@@ -5,7 +5,9 @@
 Fastmail tooling for Brenn: provider components that reach Fastmail over JMAP
 (RFC 8620, RFC 8621) through Brenn's `api-request` tool, built outside brenn's
 repository with brenn's component rules and packaged as a bundle a deployment
-installs beside brenn's release. `README.md` is the runbook; read it first.
+installs beside brenn's release. `README.md` is the project's page and the
+deployer's runbook; read it first. `docs/developing.md` is the developer's
+guide: building, the gate, the layout.
 
 `jmap/` is the transport-free JMAP crate: request building and response
 reading, no HTTP, no credential. `fastmail-mail-read/` is the one provider,
@@ -24,8 +26,16 @@ with `sed`); there is no target that runs `cargo`, and the gate never will.
   fetched by checksum. The only host prerequisites are bazelisk (as `bazel`),
   git and make.
 - Nothing in a build or test action may reach for a host-installed program.
-  If a tool is impractical to bring in through Bazel, surface it as a decision
-  rather than adding a host dependency.
+  A test that needs a service, a fixture generator or a linter gets it as a
+  Bazel dependency. If a tool is genuinely impractical to bring in through
+  Bazel, pick a different tool, and if that is not possible either, surface it
+  as a decision rather than adding a host dependency.
+- `.bazelrc` runs build and test actions sandboxed, without network. The one
+  exception is `//:buildifier_test`, which runs unsandboxed because it walks
+  the whole workspace. A target that needs either is a decision to surface,
+  not a tag to add quietly. The gate does not check the posture: a tag that
+  arrives through a brenn macro at a pin bump, or a host whose Bazel falls
+  back to a sandbox without network isolation, passes `make check` unnoticed.
 - `Cargo.toml` + `Cargo.lock` exist for `crate_universe` only. The workspace
   hub, `fastmail_crates`, is empty: every crate takes `serde` and `serde_json`
   from brenn's guest instance. Two more hubs pin build tools, each with its
@@ -38,7 +48,8 @@ with `sed`); there is no target that runs `cargo`, and the gate never will.
   `rust-version` in `Cargo.toml` and `msrv` in `clippy.toml` are held equal by
   `//tools/pins:pins_test`; so are the version in `Cargo.toml`
   `[workspace.package]` and `module(version = …)` in `MODULE.bazel`.
-  `rust-toolchain.toml` only serves rust-analyzer.
+  `//tools/pins:pins_mismatch_test` proves the test fails when any one pin
+  diverges. `rust-toolchain.toml` only serves rust-analyzer.
 
 ## The brenn pin
 
@@ -102,23 +113,25 @@ equal; re-copy all three when the pin moves.
   any failure, including a scanner that fails to start.
 
 Every scan runs `bazel run //tools/scrub:brenn-scrub`. Treat the local hooks
-as the gate and CI as a backstop: a CI run says nothing about the commit
-sitting in your working tree.
+as the gate and CI as a backstop, not the other way round: a CI run says
+nothing about the commit sitting in your working tree.
 
 If a gate blocks a write or a commit, **surface it**. Never route around it:
-no `--no-verify`, no unwiring `core.hooksPath`.
+no `--no-verify`, no unwiring `core.hooksPath`. The gate being wrong is a
+thing that happens and is worth reporting; a bypassed gate is not recoverable
+once it has been pushed.
 
 ## Principles
 
 - Fail fast. Invalid input is rejected, not coerced. No fallbacks, no
   swallowed errors.
-- No backwards-compatibility shims.
 - No over-engineering, no speculative types: a JMAP method gets its argument
-  builder and reader when a tool uses it.
+  builder and reader when a tool uses it. Scope discipline: do what was asked.
 
 ## Code standards
 
 - Rust edition 2024, the pinned stable toolchain.
+- No unused code. No backwards-compatibility shims.
 - `make check` must pass: clippy with warnings denied, rustfmt, buildifier,
   every test.
 - Comments follow brenn's `docs/comment-standard.md`: no references to
@@ -141,14 +154,21 @@ and lists what is pending.
 Two pieces that stay in sync:
 
 - The master list: `TODO.md` at the repo root plus the fragments under
-  `todo.d/` not yet gathered into it.
+  `todo.d/` not yet gathered into it. Each entry has a slug, a description,
+  and the deferral context.
 - `TODO(slug)` comments in code, marking the spot where the work happens.
 
 A new entry is a fragment, `todo.d/<slug>.md`: its first line is text, it has
 no ATX heading outside a code fence, and every fence is closed. Never add an
-entry by editing `TODO.md`. Removing a done TODO deletes its fragment if it
-still is one, else its `` ## `<slug>` `` entry in `TODO.md`, and its comment.
-Slugs are the join key; adding a TODO requires both halves.
+entry by editing `TODO.md`. `make todo-gather` folds the fragments into
+`TODO.md` at any time, `make release` at release time; between gathers
+`make changes ARGS="todo query"` lists them. Removing a done TODO deletes its
+fragment if it still is one, else its `` ## `<slug>` `` entry in `TODO.md`, and
+its comment.
+
+Slugs are the join key; adding a TODO requires both halves. Don't use TODOs for
+vague aspirations. Every TODO describes a concrete thing, in a place where
+"done" is obvious.
 
 ## Releasing
 
@@ -161,6 +181,8 @@ and push the tag.
 ## Public tree
 
 Everything tracked here is published. `TODO.md`, `CHANGELOG.md`, their
-fragments, commit messages and every code comment are public writing: no
-internal host names, no absolute paths into other trees, no references to
-documents a public reader cannot open. `brenn-scrub` is the gate.
+fragments under `todo.d/` and `changelog.d/`, commit messages and every code
+comment are public writing: no internal host names, no absolute paths into
+other trees, no references to documents a public reader cannot open. Design
+documents live outside this repository and are never cited from code.
+`brenn-scrub` is the gate.

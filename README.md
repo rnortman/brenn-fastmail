@@ -16,102 +16,25 @@ JMAP crate: the session object, the request envelope with result references,
 method responses read by call id, and the read-only mail methods
 (`Mailbox/get`, `Email/query`, `Email/get`, `Thread/get`).
 
-## Commands
+## Status
 
-```
-make setup                       # once per clone: wire the git hooks, lay the scrub kit
-make check                       # the whole gate
-make build                       # build every target
-make test                        # every test, without the lint aspects
-make fix                         # rustfmt and buildifier in place
-make repin                       # after a Cargo.toml or Cargo.lock change, or a tool bump
-make bundle                      # build the deployable tree
-make bundle-dir                  # print that tree's absolute path
-make changes ARGS="todo query"   # list pending TODO fragments
-make release VERSION=X.Y.Z       # gather fragments, bump the version, repin
-```
+One component, `fastmail-mail-read`, with four read-only tools. It sends no
+mail and changes nothing in the account, has no Sieve support, and lists
+attachments without fetching them. Nothing is released yet: there is no tag.
+The tree is built and tested against a pinned brenn commit; no test reaches
+a live Fastmail account, so the checks in Fastmail setup below are the
+operator's to run.
 
-The only host prerequisites are bazelisk (installed as `bazel`), git and make;
-every toolchain and tool is pinned in `MODULE.bazel` and fetched by checksum.
-The first `make check` on a cold machine fetches the Rust and LLVM toolchains
-and takes a while.
+## Getting started
 
-## What is the consumer's to state
-
-bzlmod reads these from the root module only, so this repository repeats them
-and brenn cannot supply them:
-
-- **The brenn pin.** `git_override(module_name = "brenn", commit = ...)` in
-  `MODULE.bazel`. The commit must be *served by* brenn's public remote,
-  because the fetch is anonymous: one that exists only in a local checkout
-  fails module resolution. Build-time contracts — the macros, `brenn-guest`'s
-  API, the provider kit, the scaffold's generated shape — are hard-cut at this
-  pin: a bump is when a rename or a changed shape is paid for, and never
-  between bumps.
-- **The Rust toolchain.** `rust.toolchain(...)` with brenn's `RUST_VERSION`
-  and `extra_target_triples = ["wasm32-unknown-unknown"]`.
-- **The `fltk` override**, at brenn's commit. fltk is in no registry, and a
-  dependency's `git_override` is ignored.
-- **The `aspect_rules_js` override.** Nothing here ships a surface kind, so
-  nothing runs brenn's jco; it is stated because it is a consumer's fact, and
-  a surface component added later needs it.
-- **The fltk serde flag** in `.bazelrc`,
-  `--@fltk//crates/fltk-serde-core:serde=@brenn//brenn-dsl:fltk_serde`.
-  Without it brenn's `dsl_cli` fails to compile with mismatched-serde-instance
-  errors.
-
-And one naming rule: every crate hub is `fastmail_*`; rules_rust refuses two
-hubs of one name across modules.
-
-Three pins are copied from brenn by hand and nothing holds them equal
-mechanically: `.bazelversion`, `RUST_VERSION` in `MODULE.bazel`, and the fltk
-commit. Re-copy all three when the brenn pin moves. `//tools/pins:pins_test`
-holds this repository's own copies of the Rust version and its version number
-equal across its manifests.
-
-### Working against a brenn the public remote does not serve
-
-When the pin is ahead of brenn's public `main`, or brenn is being changed
-locally, write one line into the gitignored `.bazelrc.user` at the repository
-root:
-
-```
-common --override_module=brenn=/path/to/brenn
-```
-
-Every `bazel` invocation reads it: the Makefile's, the git hooks', the Claude
-Code write hook's and your own. Without it, each of them fails at module
-resolution while the pin is unpublished — including the pre-commit hook, so no
-commit is possible. Never edit the pin instead, never put the line in CI, and
-never call this repository green on an overridden run: an override makes the
-pin irrelevant. `make check` prints a notice while the line is in force.
-
-## Layout
-
-- `MODULE.bazel`, `.bazelrc`, `.bazelversion` — the module graph, the brenn
-  pin and the consumer's facts above.
-- `jmap/` — `fastmail-jmap`, the JMAP crate. No I/O: it builds request bodies
-  and reads answers, and is compiled for the host (its tests) and for wasm32
-  (inside a component).
-- `spec/` — the component's authored specification, the module root a
-  deployment's `use @fastmail-mail-read::*;` resolves against.
-- `fastmail-mail-read/` — the provider: `src/logic.rs` (arguments, JMAP
-  requests, answers and compaction, all host-testable), `src/html.rs` (HTML
-  parts as plain text) and `src/lib.rs` (the guest glue).
-- `config/example.brenn` — the deployer's document: the key provider, the
-  instance with its clauses and an agent granted the tools. `//:example_fit`
-  compiles it and `//:config_check` lowers it, so the excerpt below cannot
-  drift from what brenn accepts.
-- `deployed-components.txt` — the packages the bundle ships, held equal to
-  the `component_package` targets by `//:deployed_components_test`.
-- `tools/config_check.sh` — `brenn config-check` over the example document.
-- `tools/scrub/` — `brenn-scrub` and the gitleaks release it pins, run by
-  every gate. `tools/allthechanges/` — the changelog and TODO fragment tool.
-  `tools/pins/` — the version-pin test.
-- `.githooks/`, `.claude/`, `.gitleaks.toml` — the scrub kit: the pre-commit
-  and pre-push hooks, the Claude Code write hook, the public scan rules.
-- `changelog.d/`, `todo.d/` — pending changelog and TODO fragments, gathered
-  into `CHANGELOG.md` and `TODO.md` at release.
+1. Install bazelisk, with git and make the only host prerequisites
+   ([Building](docs/developing.md#building)).
+2. Create a Fastmail API token and confirm it reaches the account
+   ([Fastmail setup](#fastmail-setup), steps 1–3).
+3. Build the tree with `make bundle` and install it as a mount
+   ([Adding the bundle to a deployment](#adding-the-bundle-to-a-deployment)).
+4. Add the configuration and run `brenn config-check` on it before
+   restarting (the same section, its last paragraph).
 
 ## Fastmail setup
 
@@ -261,6 +184,17 @@ reload that changes either is refused.
 - **401 and 403 are answers.** Brenn does not refresh a key or read
   Fastmail's error bodies. A dead or narrowed token reaches the agent as a
   refusal telling the operator to replace the key file and restart.
+
+## Documentation
+
+- [`docs/developing.md`](docs/developing.md) — building, the consumer's facts
+  bzlmod needs, the layout and the lock files.
+- [`AGENTS.md`](AGENTS.md) — the gate, the changelog and the TODO
+  conventions.
+- [`spec/fastmail-mail-read.brenn`](spec/fastmail-mail-read.brenn) — the
+  tools' input schemas and the instance's settings.
+- [`config/example.brenn`](config/example.brenn) — the checked example
+  configuration the excerpts above come from.
 
 ## License
 

@@ -19,3 +19,25 @@ sh_test(
     },
     deps = ["@bazel_tools//tools/bash/runfiles"],
 )
+
+# Holds pins_test to failing: one broken pin at a time must turn it red.
+sh_test(
+    name = "pins_mismatch_test",
+    size = "small",
+    srcs = ["pins_mismatch_test.sh"],
+    data = [
+        "pins_test.sh",
+        "//:Cargo.toml",
+        "//:MODULE.bazel",
+        "//:clippy.toml",
+        "//:rust-toolchain.toml",
+    ],
+    env = {
+        "CARGO_TOML": "$(rlocationpath //:Cargo.toml)",
+        "CLIPPY_TOML": "$(rlocationpath //:clippy.toml)",
+        "MODULE_BAZEL": "$(rlocationpath //:MODULE.bazel)",
+        "PINS_TEST": "$(rlocationpath pins_test.sh)",
+        "RUST_TOOLCHAIN_TOML": "$(rlocationpath //:rust-toolchain.toml)",
+    },
+    deps = ["@bazel_tools//tools/bash/runfiles"],
+)
