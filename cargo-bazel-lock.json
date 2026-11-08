@@ -1,9 +1,9 @@
 {
-  "checksum": "53036b5346f58ba633a48b3ad98c79442f749e829241ffbcd4aae6cc568f84b9",
+  "checksum": "869af6883cbbcb5d47ba16deb7b80867998479f0b1783405e5f22ba091af0cd2",
   "crates": {
-    "fastmail-jmap 0.1.0": {
+    "fastmail-jmap 0.2.0": {
       "name": "fastmail-jmap",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "package_url": null,
       "repository": null,
       "targets": [
@@ -26,7 +26,7 @@
           "**"
         ],
         "edition": "2024",
-        "version": "0.1.0"
+        "version": "0.2.0"
       },
       "license": "Apache-2.0",
       "license_ids": [
@@ -34,9 +34,9 @@
       ],
       "license_file": null
     },
-    "fastmail-mail-read 0.1.0": {
+    "fastmail-mail-read 0.2.0": {
       "name": "fastmail-mail-read",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "package_url": null,
       "repository": null,
       "targets": [],
@@ -46,7 +46,7 @@
           "**"
         ],
         "edition": "2024",
-        "version": "0.1.0"
+        "version": "0.2.0"
       },
       "license": "Apache-2.0",
       "license_ids": [
@@ -57,8 +57,8 @@
   },
   "binary_crates": [],
   "workspace_members": {
-    "fastmail-jmap 0.1.0": "jmap",
-    "fastmail-mail-read 0.1.0": "fastmail-mail-read"
+    "fastmail-jmap 0.2.0": "jmap",
+    "fastmail-mail-read 0.2.0": "fastmail-mail-read"
   },
   "conditions": {
     "wasm32-unknown-unknown": [

@@ -15,7 +15,7 @@ resolver = "3"
 # `version` equals `module(version = ...)` in MODULE.bazel and `rust-version`
 # the major.minor of RUST_VERSION there; //tools/pins:pins_test checks both.
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/rnortman/brenn-fastmail"

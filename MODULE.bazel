@@ -18,7 +18,7 @@ checksum, so a build needs nothing from the host but bazelisk.
 
 module(
     name = "brenn_fastmail",
-    version = "0.1.0",
+    version = "0.2.0",
 )
 
 bazel_dep(name = "platforms", version = "1.1.0")
