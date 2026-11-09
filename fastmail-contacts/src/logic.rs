@@ -61,6 +61,8 @@ const API_STEP: u8 = 2;
 /// What to narrow when a search's answer is too large.
 const LIMIT_HINT: &str = "ask for fewer with `limit`";
 
+// TODO(contacts-query-unconfirmed-against-live-fastmail): unconfirmed against
+// a live account that Fastmail sorts by these.
 /// A search's order: by surname, then given name.
 const NAME_SORT: [Sort; 2] = [
     Sort {

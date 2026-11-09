@@ -5,6 +5,7 @@
 set -u
 cd "$CLAUDE_PROJECT_DIR"
 file=$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("tool_input",{}).get("file_path",""))' 2>/dev/null)
+# TODO(edit-hook-formats-files-outside-the-workspace): a file outside this workspace is formatted without its own repository's configuration.
 case "$file" in
     *.rs)
         bazel run --noshow_progress --ui_event_filters=-info \
