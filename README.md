@@ -7,22 +7,31 @@ RFC 8621) through Brenn's `api-request` tool. Each user's API token lives in
 a key file the operator places, bound to that user, and never reaches a
 component: an agent reads the Fastmail account of the user it is serving.
 
-The repository holds one component, `fastmail-mail-read`, which gives an
-agent four read-only tools: `FastmailMailboxes` (the account's mailboxes),
+The repository holds two components. `fastmail-mail-read` gives an agent four
+read-only tools: `FastmailMailboxes` (the account's mailboxes),
 `FastmailSearch` (messages by sender, recipient, subject, text, mailbox, date
 or keyword), `FastmailRead` (one message's headers and text, attachments
 listed) and `FastmailThread` (a conversation's newest messages). Nothing it
-does writes to the account. It is built on `fastmail-jmap`, a transport-free
-JMAP crate: the session object, the request envelope with result references,
-method responses read by call id, and the read-only mail methods
-(`Mailbox/get`, `Email/query`, `Email/get`, `Thread/get`).
+does writes to the account. `fastmail-mail-write` gives an agent four tools
+that change it: `FastmailOrganize` (add messages to and remove them from
+mailboxes, set and clear keywords such as read, flagged or a label),
+`FastmailMailboxCreate` and `FastmailMailboxUpdate` (create, rename and move
+mailboxes) and `FastmailDraft` (save a draft, or a reply to a message, in
+Drafts for the user to review and send from Fastmail). Nothing it does sends
+mail or permanently deletes anything. Both are built on `fastmail-jmap`, a
+transport-free JMAP crate: the session object, the request envelope with
+result references, method responses read by call id, and the mail methods
+the tools use (`Mailbox/get`, `Mailbox/query`, `Mailbox/set`, `Email/query`,
+`Email/get`, `Email/set`, `Thread/get`, `Identity/get`).
 
 ## Status
 
-One component, `fastmail-mail-read`, with four read-only tools. It sends no
-mail and changes nothing in the account, has no Sieve support, and lists
-attachments without fetching them. Nothing is released yet: there is no tag.
-The tree is built and tested against a pinned brenn commit; no test reaches
+Two components: `fastmail-mail-read`, with four read-only tools, and
+`fastmail-mail-write`, which organizes messages and mailboxes and saves
+drafts. Nothing here sends mail, there is no Sieve support, and attachments
+are listed, not fetched. A draft is created, never edited in place or
+destroyed. Releases are tagged `v<version>`; `CHANGELOG.md` lists them. The
+tree is built and tested against a pinned brenn commit; no test reaches
 a live Fastmail account, so the checks in Fastmail setup below are the
 operator's to run.
 
@@ -41,7 +50,14 @@ operator's to run.
 
 1. Each user creates, in Fastmail's settings under Privacy & Security →
    Integrations → API tokens, a token with read-only access to mail, one per
-   Fastmail account they want their agents to read.
+   Fastmail account they want their agents to read. For the write component,
+   each user also creates a second token per account with read-write access
+   to mail; it goes in a second key provider, `fastmail-write`, which only the
+   write instance names, so the read instance's tokens cannot change the
+   account. One read-write token per account in one provider that both
+   instances name also works, and brenn accepts it, but the read component's
+   guarantee that nothing it does writes then rests on its code alone, not on
+   the token.
 2. Write one file per account: `Bearer <token>` — the word, one space, the
    token, nothing else — in a file owned by the user brenn runs as, mode
    `0600`. Brenn sends the
@@ -60,6 +76,13 @@ operator's to run.
    ```
 
    `primaryAccounts` must name an account for `urn:ietf:params:jmap:mail`.
+   For a read-write token, it must also name one for
+   `urn:ietf:params:jmap:submission`, which the capabilities list: the draft's
+   From is one of the account's sending identities, read through it, and
+   without it `FastmailDraft` refuses every draft. That capability also lets
+   the token send mail as the user, and any read-write token can destroy
+   messages: that the write component sends and destroys nothing rests on its
+   code alone, not on the token.
 4. Confirm the API path, which the component sends without a trailing slash:
 
    ```
@@ -75,8 +98,9 @@ operator's to run.
 
 ## Adding the bundle to a deployment
 
-`make bundle` builds the release tree — `components/fastmail-mail-read/` and
-`modules/fastmail-mail-read.brenn` — and `make bundle-dir` prints its absolute
+`make bundle` builds the release tree — `components/fastmail-mail-read/`,
+`components/fastmail-mail-write/`, `modules/fastmail-mail-read.brenn` and
+`modules/fastmail-mail-write.brenn` — and `make bundle-dir` prints its absolute
 path; a deploy pipeline copies that tree and writes a `VERSION` file beside
 it, which a mount requires. This repository ships no installer.
 
@@ -91,11 +115,12 @@ mount fastmail { path = "/var/lib/brenn/bundles/fastmail"; }
 
 where `/var/lib/brenn/bundles/fastmail` is a symlink to, say,
 `fastmail.v0.1.0/`. Then add to the configuration, as
-`config/example.brenn` has it. The import goes at the top of the document,
+`config/example.brenn` has it. The imports go at the top of the document,
 with the other `use` lines:
 
 ```
 use @fastmail-mail-read::*;
+use @fastmail-mail-write::*;
 ```
 
 A read's answer is Fastmail's JSON as a string inside the tool result, and
@@ -109,7 +134,7 @@ messaging {
 }
 ```
 
-The key provider: one `account` block per file written above, each naming
+The key providers: one `account` block per file written above, each naming
 the brenn user whose account it is. The user must be registered before the
 restart that adds the block, or boot refuses it. An account's name is what an
 agent passes as `account` to pick among a user's several accounts; mark one
@@ -137,7 +162,31 @@ api_key_provider fastmail {
 }
 ```
 
-The inbox the instance's answers arrive on. The class's four tools together
+The write component's provider holds the read-write tokens for the same
+accounts, under the same names and with the same `default`, so an agent's
+`account`, or its omission, means the same mailbox to both components:
+
+```
+api_key_provider fastmail-write {
+  header = "Authorization";
+  api_hosts = ["https://api.fastmail.com"];
+  account alice {
+    user = "alice";
+    key_file = "/etc/brenn/fastmail-write/alice";
+    default = true;
+  }
+  account alice-work {
+    user = "alice";
+    key_file = "/etc/brenn/fastmail-write/alice-work";
+  }
+  account bob {
+    user = "bob";
+    key_file = "/etc/brenn/fastmail-write/bob";
+  }
+}
+```
+
+The inbox the read instance's answers arrive on. The class's four tools together
 allow 12 live requests, each with one nested call outstanding; a result can
 be re-delivered once, so `retain_depth` is at least 24, rounded up to 32:
 
@@ -150,8 +199,20 @@ channel at "brenn:tool-results/fastmail_mail" {
 }
 ```
 
-The instance. It may call exactly two endpoints; `config` names the key
-provider and the host it calls:
+The write class's four tools allow 6 live requests, so 2 × 6 = 12 fits the
+default of 16; declare its inbox anyway so a full one raises an alarm:
+
+```
+channel at "brenn:tool-results/fastmail_mail_write" {
+  push_depth = 1;
+  retain_depth = 16;
+  standing_retain_depth = 16;
+  noise = alarm;
+}
+```
+
+The instances. Each may call exactly two endpoints, through its own key
+provider; `config` names the provider and the host it calls:
 
 ```
 new fastmail_mail: FastmailMailRead {
@@ -167,20 +228,47 @@ new fastmail_mail: FastmailMailRead {
     host = "api.fastmail.com"
   };
 }
+
+new fastmail_mail_write: FastmailMailWrite {
+  grants = [log, store, config, tools, provides];
+  store_path = "/var/lib/brenn/stores/fastmail_mail_write";
+  tool api-request {
+    allow { provider = "fastmail-write"; method = "GET";  host = "api.fastmail.com"; path = "/jmap/session"; }
+    allow { provider = "fastmail-write"; method = "POST"; host = "api.fastmail.com"; path = "/jmap/api"; }
+    rate_limit { burst = 20; sustained_per_minute = 60; }
+  }
+  config = {
+    provider = "fastmail-write",
+    host = "api.fastmail.com"
+  };
+}
 ```
 
-And on each agent that may read the mail, which must run in a `container`:
+And on each agent that may use the mail, which must run in a `container`,
+the read tools and, where the agent may change the account, the write tools:
 
 ```
   tool fastmail-mailboxes {}
   tool fastmail-search {}
   tool fastmail-read {}
   tool fastmail-thread {}
+  tool fastmail-organize {}
+  tool fastmail-mailbox-create {}
+  tool fastmail-mailbox-update {}
+  tool fastmail-draft {}
 ```
+
+A draft is from one of the account's sending identities: the only one, or the account's
+main address; when the account has several and none is main, the agent is
+refused with their addresses and names one as `from`, an address alone,
+since the identity's own display name is the draft's From name. An identity
+whose address contains `*` is never sent from.
 
 Run `brenn config-check` on the document before stopping the service, then
 restart: a key provider and the `messaging` section are read at boot, and a
-reload that changes either is refused.
+reload that changes either is refused; installing a component whose class
+provides tools, such as adding `fastmail-mail-write` to a deployment that
+runs only the read component, also takes a restart.
 
 ## Limits an operator should know
 
@@ -193,10 +281,24 @@ reload that changes either is refused.
   its ceiling of 60000, or a full page of search results, needs the raised
   cap above.
 - **Arguments.** A nested call's arguments are capped at 64 KiB; every
-  request this component builds is far under it.
+  request the components build fits under it by construction.
+  `FastmailOrganize` takes 1–500 message ids and up to 20 entries in each of
+  its four lists, and refuses ids and changes whose `update` object would be
+  over 30000 bytes, asking for fewer ids. `FastmailDraft` takes up to 10
+  recipients in each of `to`, `cc` and `bcc`, a subject of up to 500
+  characters, and a body of up to 20000 characters and 30000 bytes as sent,
+  where a line break counts as three and a quote or backslash as four.
 - **Time.** A tool call has 240 seconds end to end. Each step — the session
   read, the JMAP call, and for a thread a second JMAP call — is one nested
-  call of at most 60 seconds.
+  call of at most 60 seconds. A draft is three steps: the session, a lookup
+  of the sending identity, the Drafts mailbox and any original, then the
+  write.
+- **Writes are answered per message.** Fastmail applies `FastmailOrganize`'s
+  change to each message on its own: the answer counts the messages changed
+  and lists each refused one under `not_updated` with Fastmail's reason, and
+  is a refusal only when none changed. A message must stay in at least one
+  mailbox. A write whose answer is lost says what may already have happened
+  and whether asking again is safe.
 - **A key per user.** Each user's token is a file the operator places and
   an `account` block names; a user with no account is refused, naming the
   operator. Adding, removing or rotating an account takes a restart. A user
@@ -213,7 +315,9 @@ reload that changes either is refused.
 - **401 and 403 are answers.** Brenn does not refresh a key or read
   Fastmail's error bodies. A dead or narrowed token reaches the agent as a
   refusal telling the operator to replace that account's key file and
-  restart.
+  restart. A read-only token on the write instance answers every write with
+  "cannot write mail", the same instruction: a token with read-write access
+  to mail.
 
 ## Documentation
 
@@ -221,8 +325,9 @@ reload that changes either is refused.
   bzlmod needs, the layout and the lock files.
 - [`AGENTS.md`](AGENTS.md) — the gate, the changelog and the TODO
   conventions.
-- [`spec/fastmail-mail-read.brenn`](spec/fastmail-mail-read.brenn) — the
-  tools' input schemas and the instance's settings.
+- [`spec/fastmail-mail-read.brenn`](spec/fastmail-mail-read.brenn) and
+  [`spec/fastmail-mail-write.brenn`](spec/fastmail-mail-write.brenn) — the
+  tools' input schemas and the instances' settings.
 - [`config/example.brenn`](config/example.brenn) — the checked example
   configuration the excerpts above come from.
 

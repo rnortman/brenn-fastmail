@@ -1,0 +1,20 @@
+{
+  "accountId": "a1",
+  "oldState": "s1",
+  "newState": "s2",
+  "created": {
+    "draft": {"id": "e9", "blobId": "b9", "threadId": "t4", "size": 812}
+  },
+  "updated": {"e1": null, "e2": {"keywords/$seen": true}},
+  "notCreated": {
+    "other": {"type": "overQuota"}
+  },
+  "notUpdated": {
+    "e3": {
+      "type": "invalidProperties",
+      "description": "an email must be in at least one mailbox",
+      "properties": ["mailboxIds"]
+    },
+    "e4": {"type": "notFound"}
+  }
+}

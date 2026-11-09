@@ -11,12 +11,15 @@ pub mod mail;
 pub mod request;
 pub mod response;
 pub mod session;
+pub mod set;
 
 pub use error::{Error, RequestError};
 pub use mail::{
-    Address, BodyPart, BodyValue, Email, EmailGet, EmailQuery, Filter, FilterCondition, GetResult,
-    Ids, Mailbox, MailboxGet, QueryResult, Sort, Thread, ThreadGet,
+    Address, BodyPart, BodyValue, Email, EmailCreate, EmailCreated, EmailGet, EmailQuery, EmailSet,
+    Filter, FilterCondition, GetResult, Identity, IdentityGet, Ids, Mailbox, MailboxCreate,
+    MailboxCreated, MailboxGet, MailboxQuery, MailboxSet, QueryResult, Sort, Thread, ThreadGet,
 };
 pub use request::{CallId, Request, result_ref};
 pub use response::{Response, request_error};
 pub use session::Session;
+pub use set::{Patch, SetError, SetResult};

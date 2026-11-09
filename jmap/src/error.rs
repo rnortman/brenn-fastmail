@@ -31,7 +31,7 @@ pub struct RequestError {
 /// A string from the answer, written with each control character escaped
 /// (`\n`, `\u{1b}`), so a rendering stays on one line whatever the server
 /// sent.
-struct OneLine<'a>(&'a str);
+pub(crate) struct OneLine<'a>(pub(crate) &'a str);
 
 impl fmt::Display for OneLine<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

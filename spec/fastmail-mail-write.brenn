@@ -1,0 +1,67 @@
+/// Each user's Fastmail mail organizing for an assistant over JMAP (RFC 8620
+/// and RFC 8621), as native tools, each answered by `api-request` calls
+/// against the `api_key_provider` the instance names. That provider holds
+/// one account per user, or several, each a user's API token with
+/// read-write access to mail; `api-request` picks the calling user's, and
+/// attaches it host-side, so no token ever reaches this component. The tools
+/// change messages' mailboxes and keywords, create and rename mailboxes, and
+/// save drafts for the user to send from Fastmail; nothing here sends mail or
+/// permanently deletes anything. A draft is from one of the account's
+/// sending identities, so the token's session must advertise
+/// `urn:ietf:params:jmap:submission`.
+///
+/// Every capability is load-bearing: `config` names the provider and the
+/// host, without which no call can be addressed; `store` carries each
+/// request's state between the activation that issues its nested call and
+/// the one that receives the answer; `tools` is the authority to call
+/// `api-request`; `provides` is what makes the tools exist; `log` records each
+/// step's tool, status and size — never a body or a header.
+///
+/// The instance's `config = { ... };` map is flat: `provider` is the
+/// `api_key_provider` name, whose `account` blocks bind each user's token; `host` is the `host[:port]` Fastmail's JMAP API
+/// is called on (`api.fastmail.com`), which `api-request` matches against that
+/// provider's `api_hosts` and the instance's clauses must admit, for `GET
+/// /jmap/session` and `POST /jmap/api`. A missing or malformed key fails every
+/// activation, naming the key.
+///
+/// Size the instance's result inbox with a `channel at
+/// "brenn:tool-results/<slug>"` block: each live request has at most one
+/// nested call outstanding, so the window must hold Σ max_concurrency results,
+/// twice over for a re-delivered result — `retain_depth ≥ 2 × Σ`, rounded up
+/// to a power of two. This class's Σ is 2 + 1 + 1 + 2 = 6, so the family
+/// default of 16 holds it.
+///
+/// Every nested answer crosses the bus as a tool result and must fit
+/// `[messaging] max_body_bytes`. Fastmail's answers to these tools are small:
+/// the default cap carries them, and a raised cap is the read component's
+/// need, not this one's.
+component FastmailMailWrite {
+  abi = processor;
+  requires = [log, store, config, tools, provides];
+  in tool-results;
+  in tool-requests;
+  provide fastmail-organize {
+    mcp_name = "FastmailOrganize";
+    description = "Change the mailboxes (folders) and keywords of messages in the user's Fastmail account. `account` names which of the user's Fastmail accounts, by the name the operator gave it; omit it for the user's default or only account. A refusal listing account names means several are configured and none is the default: pass one. `ids` (1-500 message ids from `FastmailSearch` or `FastmailThread`) are the messages; every one gets the same change. Give at least one of `add_mailboxes`, `remove_mailboxes` (each 1-20 mailbox ids from `FastmailMailboxes`), `add_keywords`, `remove_keywords` (each 1-20 keywords: `$seen` marks read, `$flagged` flagged, `$answered` answered, `$draft` draft, any other is a label); one list may not name what its opposite names. A message must stay in at least one mailbox: to move messages, remove the mailbox they are in and add another; to trash them, add the mailbox whose `role` is `trash` and remove the others, which the user can undo from Fastmail until Trash is emptied. Adding to the mailbox whose `role` is `junk` may train the account's spam filter. Answers `updated` (how many messages changed) and, when Fastmail refused some, `not_updated`, each refused id with Fastmail's reason, and `hint` when a refusal concerns mailbox membership: read `not_updated` before telling the user the change was made. When no message changed the request is refused with Fastmail's reason. `ids` and the changes together are limited in size: a refusal saying they are too wide asks for fewer `ids`. A refusal saying the change may already have been applied means the answer was lost: asking again with the same arguments is safe. A refusal saying Fastmail refused the token (HTTP 401 or 403), or that the token cannot write mail, is the operator's to fix: the account's key file.";
+    input_schema = """{ "type": "object", "properties": { "ids": { "type": "array", "minItems": 1, "maxItems": 500, "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,255}$" } }, "add_mailboxes": { "type": "array", "minItems": 1, "maxItems": 20, "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,255}$" } }, "remove_mailboxes": { "type": "array", "minItems": 1, "maxItems": 20, "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,255}$" } }, "add_keywords": { "type": "array", "minItems": 1, "maxItems": 20, "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Za-z0-9$_.-]{1,255}$" } }, "remove_keywords": { "type": "array", "minItems": 1, "maxItems": 20, "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Za-z0-9$_.-]{1,255}$" } }, "account": { "type": "string", "pattern": "^[a-z]([a-z0-9-]{0,253}[a-z0-9])?$" } }, "required": ["ids"], "additionalProperties": false }""";
+    max_concurrency = 2;
+  }
+  provide fastmail-mailbox-create {
+    mcp_name = "FastmailMailboxCreate";
+    description = "Create a mailbox (folder) in the user's Fastmail account. `account` names which of the user's Fastmail accounts, by the name the operator gave it; omit it for the user's default or only account. A refusal listing account names means several are configured and none is the default: pass one. `name` (at most 255 characters, no control characters) is the new mailbox's name; `parent_id` (a mailbox id from `FastmailMailboxes`) nests it, and without it the mailbox is at the top level. Answers the new mailbox's `id`, which `FastmailOrganize` takes. Fastmail refuses a name a sibling already has. A refusal saying the mailbox may have been created means the answer was lost: list the mailboxes with FastmailMailboxes before asking again, or the user has two. A refusal saying Fastmail refused the token (HTTP 401 or 403), or that the token cannot write mail, is the operator's to fix: the account's key file.";
+    input_schema = """{ "type": "object", "properties": { "name": { "type": "string", "minLength": 1, "maxLength": 255, "pattern": "[^\\s\\u0085]" }, "parent_id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,255}$" }, "account": { "type": "string", "pattern": "^[a-z]([a-z0-9-]{0,253}[a-z0-9])?$" } }, "required": ["name"], "additionalProperties": false }""";
+    max_concurrency = 1;
+  }
+  provide fastmail-mailbox-update {
+    mcp_name = "FastmailMailboxUpdate";
+    description = "Rename or move a mailbox (folder) of the user's Fastmail account. `account` names which of the user's Fastmail accounts, by the name the operator gave it; omit it for the user's default or only account. A refusal listing account names means several are configured and none is the default: pass one. `id` is the mailbox's id from `FastmailMailboxes`. Give at least one of `name` (the new name, at most 255 characters, no control characters), `parent_id` (a mailbox id to move it under) and `top_level` (true to move it to the top level); `parent_id` and `top_level` together are refused. Answers the mailbox's `id` and `updated`, the properties changed (`name`, `parent_id`). Fastmail refuses a name a sibling already has and a move under the mailbox itself or one of its descendants. A refusal saying the change may already have been applied means the answer was lost: asking again with the same arguments is safe. A refusal saying Fastmail refused the token (HTTP 401 or 403), or that the token cannot write mail, is the operator's to fix: the account's key file.";
+    input_schema = """{ "type": "object", "properties": { "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,255}$" }, "name": { "type": "string", "minLength": 1, "maxLength": 255, "pattern": "[^\\s\\u0085]" }, "parent_id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,255}$" }, "top_level": { "type": "boolean" }, "account": { "type": "string", "pattern": "^[a-z]([a-z0-9-]{0,253}[a-z0-9])?$" } }, "required": ["id"], "additionalProperties": false }""";
+    max_concurrency = 1;
+  }
+  provide fastmail-draft {
+    mcp_name = "FastmailDraft";
+    description = "Save a draft email in the Drafts mailbox of the user's Fastmail account, for the user to review and send from Fastmail; no tool sends it. `account` names which of the user's Fastmail accounts, by the name the operator gave it; omit it for the user's default or only account. A refusal listing account names means several are configured and none is the default: pass one. `to`, `cc`, `bcc` are each 1-10 distinct recipients, `user@example.com` or `Alice Example <alice@example.com>`: a name of at most 100 characters with no angle bracket, double quote or backslash, and an address with no whitespace, angle bracket, double quote, backslash or comma, at most 254 bytes. `subject` is at most 500 characters on one line. `body` is the plain-text body, at most 20000 characters and 30000 bytes of UTF-8 where a line break counts as three and a quote or backslash as four. `to` and `subject` are required unless `reply_to_id` is given: `reply_to_id` (a message id from `FastmailSearch` or `FastmailThread`) makes the draft a reply, addressed by default to the original's Reply-To or else its sender, its subject by default the original's with `Re: `, and its threading headers set so Fastmail files it in the original's conversation; the answer says `in_thread: false` when Fastmail filed it elsewhere. The draft is from one of the account's sending identities: the only one, or the account's main address; when the account has several and none is main the request is refused listing their addresses, and `from`, one of those addresses, picks one. `from` is an address alone, as the identity's own display name is the draft's From name. A draft cannot be edited in place: to revise one, save a new draft (with the same `reply_to_id` if it is a reply) and move the old one to the mailbox whose `role` is `trash` with `FastmailOrganize`, which the user can undo. Answers the draft's `id`, `thread_id`, `mailbox_id` and `from`, and `to`, `subject` and `in_reply_to` when the tool chose them from the original. A refusal saying the draft may have been saved means the answer was lost: look for it with FastmailSearch (`keyword: $draft`) before asking again, or the user has two. A refusal saying Fastmail refused the token (HTTP 401 or 403), that the token cannot write mail, or that no sending identity can be read is the operator's to fix: the account's key file or its access.";
+    input_schema = """{ "type": "object", "properties": { "to": { "type": "array", "minItems": 1, "maxItems": 10, "uniqueItems": true, "items": { "type": "string", "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f<>\"\\\\]{1,100} <[^\\s\\u0000-\\u001f\\u007f-\\u009f<>\"\\\\@,]{1,64}@[^\\s\\u0000-\\u001f\\u007f-\\u009f<>\"\\\\@,]{1,253}>|[^\\s\\u0000-\\u001f\\u007f-\\u009f<>\"\\\\@,]{1,64}@[^\\s\\u0000-\\u001f\\u007f-\\u009f<>\"\\\\@,]{1,253})$" } }, "cc": { "type": "array", "minItems": 1, "maxItems": 10, "uniqueItems": true, "items": { "type": "string", "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f<>\"\\\\]{1,100} <[^\\s\\u0000-\\u001f\\u007f-\\u009f<>\"\\\\@,]{1,64}@[^\\s\\u0000-\\u001f\\u007f-\\u009f<>\"\\\\@,]{1,253}>|[^\\s\\u0000-\\u001f\\u007f-\\u009f<>\"\\\\@,]{1,64}@[^\\s\\u0000-\\u001f\\u007f-\\u009f<>\"\\\\@,]{1,253})$" } }, "bcc": { "type": "array", "minItems": 1, "maxItems": 10, "uniqueItems": true, "items": { "type": "string", "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f<>\"\\\\]{1,100} <[^\\s\\u0000-\\u001f\\u007f-\\u009f<>\"\\\\@,]{1,64}@[^\\s\\u0000-\\u001f\\u007f-\\u009f<>\"\\\\@,]{1,253}>|[^\\s\\u0000-\\u001f\\u007f-\\u009f<>\"\\\\@,]{1,64}@[^\\s\\u0000-\\u001f\\u007f-\\u009f<>\"\\\\@,]{1,253})$" } }, "subject": { "type": "string", "minLength": 1, "maxLength": 500, "pattern": "[^\\s\\u0085]" }, "body": { "type": "string", "minLength": 1, "maxLength": 20000, "pattern": "[^\\s\\u0085]" }, "reply_to_id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,255}$" }, "from": { "type": "string", "pattern": "^[^\\s\\u0000-\\u001f\\u007f-\\u009f<>\"\\\\@,]{1,64}@[^\\s\\u0000-\\u001f\\u007f-\\u009f<>\"\\\\@,]{1,253}$" }, "account": { "type": "string", "pattern": "^[a-z]([a-z0-9-]{0,253}[a-z0-9])?$" } }, "required": ["body"], "additionalProperties": false }""";
+    max_concurrency = 2;
+  }
+}

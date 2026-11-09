@@ -19,8 +19,8 @@ mod logic;
 mod spec;
 
 use brenn_guest::{Activation, Error, Processor};
+use fastmail_provider::settings::Settings;
 
-use crate::logic::Settings;
 use crate::spec::config;
 
 struct FastmailMailRead;

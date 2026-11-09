@@ -1,0 +1,58 @@
+load("@brenn//bazel/wasm:defs.bzl", "guest_spec_scaffold", "wasm_component", "wasm_guest_cdylib")
+load("@rules_rust//rust:defs.bzl", "rust_test")
+
+# `src/spec.rs` is generated from the specification and untracked: editing the
+# spec rebuilds it, and a guest that has not kept up stops compiling.
+guest_spec_scaffold(
+    name = "spec",
+    spec = "//spec:fastmail-mail-write.brenn",
+)
+
+# Serde comes from brenn's guest instance, as the provider kit's does: the
+# kit's `Value`s are the ones brenn-guest hands over.
+wasm_guest_cdylib(
+    name = "fastmail-mail-write",
+    generated_srcs = {"src/spec.rs": ":spec"},
+    deps = [
+        "//jmap:fastmail_jmap",
+        "//provider:fastmail_provider",
+        "@brenn//brenn-provider-kit:brenn-provider-kit_guest",
+        "@brenn//brenn-wasm/components/guest:brenn-guest",
+        "@brenn//brenn-wasm/components/guest:serde",
+        "@brenn//brenn-wasm/components/guest:serde_json",
+        "@brenn//brenn-wasm/components/provider-kit-guest:brenn-provider-kit-guest",
+    ],
+)
+
+wasm_component(
+    name = "component",
+    module = ":fastmail-mail-write",
+    visibility = ["//visibility:public"],
+)
+
+# Argument validation, request assembly and answer reading are std,
+# serde_json, the JMAP crate, the shared provider crate and the provider kit
+# only, so they run on the host; the glue in lib.rs needs the guest SDK and
+# builds for wasm32 alone. The generated `spec` module compiles here too, since
+# its SDK-facing items are wasm32-only. The test reads the specification it
+# holds the input schemas to from the path in FASTMAIL_MAIL_WRITE_SPEC.
+rust_test(
+    name = "logic_test",
+    size = "small",
+    srcs = [
+        "src/draft.rs",
+        "src/logic.rs",
+        ":spec",
+    ],
+    crate_root = "src/logic.rs",
+    data = ["//spec:fastmail-mail-write.brenn"],
+    edition = "2024",
+    env = {"FASTMAIL_MAIL_WRITE_SPEC": "$(rootpath //spec:fastmail-mail-write.brenn)"},
+    deps = [
+        "//jmap:fastmail_jmap",
+        "//provider:fastmail_provider",
+        "@brenn//brenn-provider-kit:brenn-provider-kit_guest",
+        "@brenn//brenn-wasm/components/guest:serde",
+        "@brenn//brenn-wasm/components/guest:serde_json",
+    ],
+)

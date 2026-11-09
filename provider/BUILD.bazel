@@ -1,0 +1,35 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# The plumbing the components share: settings, argument readers, the session
+# step and failure mapping. One target serves the component cdylibs, built
+# for wasm32 through their platform transition, and the components' host
+# `logic_test`s alike, as brenn's provider kit does: two copies of a crate in
+# one graph do not typecheck against each other. `testutils` carries the
+# `testutil` fixtures and follows brenn's `testutils` flag, which is on by
+# default and cleared by brenn's release configs. The select names brenn's
+# `config_setting` here: brenn's `TESTUTILS_FEATURES` resolves its keys
+# against the loading repository, which has no such package.
+rust_library(
+    name = "fastmail_provider",
+    srcs = glob(["src/**/*.rs"]),
+    crate_features = select({
+        "@brenn//bazel/features:testutils_enabled": ["testutils"],
+        "//conditions:default": [],
+    }),
+    crate_name = "fastmail_provider",
+    edition = "2024",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//jmap:fastmail_jmap",
+        "@brenn//brenn-provider-kit:brenn-provider-kit_guest",
+        "@brenn//brenn-wasm/components/guest:serde",
+        "@brenn//brenn-wasm/components/guest:serde_json",
+    ],
+)
+
+rust_test(
+    name = "fastmail_provider_test",
+    size = "small",
+    crate = ":fastmail_provider",
+    crate_features = ["testutils"],
+)

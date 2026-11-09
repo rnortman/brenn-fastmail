@@ -21,32 +21,26 @@ mod spec;
 use std::collections::BTreeMap;
 
 use brenn_provider_kit::{
-    Answer, ApiCall, Args, COMPACT_RESULT_CEILING, Call, ErrorKind, Failure, Logic, NestedError,
-    Next, Query, Tool, bounded, capped, cut, flag, host, integer, internal, no_such_step, object,
-    read_api_result, required,
+    Args, COMPACT_RESULT_CEILING, Call, Failure, Logic, NestedError, Next, Tool, bounded, capped,
+    cut, flag, integer, internal, no_such_step, object,
 };
 use fastmail_jmap::mail::{MAILBOX_PROPERTIES, READ_PROPERTIES, SUMMARY_PROPERTIES};
-use fastmail_jmap::session::{API_PATH, SESSION_PATH};
 use fastmail_jmap::{
-    Address, BodyPart, CallId, Email, EmailGet, EmailQuery, Error as JmapError, Filter,
-    FilterCondition, Ids, Mailbox, MailboxGet, QueryResult, Request, Response, Sort, Thread,
-    ThreadGet, request_error, result_ref, session,
+    Address, BodyPart, CallId, Email, EmailGet, EmailQuery, Filter, FilterCondition, Ids, Mailbox,
+    MailboxGet, QueryResult, Request, Response, Sort, Thread, ThreadGet, result_ref,
 };
+use fastmail_provider::args::{ACCOUNT_ARG, ID_MAX_CHARS, account_arg, keyword_arg, token};
+use fastmail_provider::failure::{
+    answer_body, derived_str, derived_u64, invalid, jmap_failure, missing_derived, optional,
+};
+use fastmail_provider::settings::{API_NAME, Settings};
+use fastmail_provider::steps::{ACCOUNT_KEY, SESSION_STEP, api_step, read_session, session_call};
 use serde_json::{Value, json};
 
 use crate::spec::Provided;
 
-/// The API's display name in every refusal the model sees.
-pub const API_NAME: &str = "Fastmail";
-
 /// The most characters a free-text search argument may hold.
 const TEXT_MAX_CHARS: usize = 1024;
-/// The most characters a JMAP id may hold (RFC 8620 section 1.2).
-const ID_MAX_CHARS: usize = 255;
-/// The most characters an account name may hold.
-const ACCOUNT_MAX_CHARS: usize = 255;
-/// The most characters a keyword may hold.
-const KEYWORD_MAX_CHARS: usize = 255;
 
 /// A search's page size: its range and default; and the furthest it skips.
 const LIMIT_MAX: u64 = 25;
@@ -75,8 +69,7 @@ const ADDRESS_MAX_BYTES: usize = 400;
 const HEADER_MAX_BYTES: usize = 1000;
 const CONTENT_TYPE_MAX_BYTES: usize = 255;
 
-/// The steps: the session, the JMAP request, and the thread's emails.
-const SESSION_STEP: u8 = 1;
+/// The steps after the session: the JMAP request, and the thread's emails.
 const API_STEP: u8 = 2;
 const THREAD_EMAILS_STEP: u8 = 3;
 
@@ -85,44 +78,11 @@ const LIMIT_HINT: &str = "ask for fewer with `limit`";
 const BODY_HINT: &str = "ask for a smaller `max_body_bytes`";
 const MAX_HINT: &str = "ask for a smaller `max`";
 
-/// The request-level error for a request over one of the server's limits.
-/// Of those (RFC 8620 section 3.6.1), this provider's few small calls can
-/// reach only the concurrent-request count, which a retry clears.
-const LIMIT_ERROR: &str = "urn:ietf:params:jmap:error:limit";
-/// Method-level error types caused by what the caller asked for.
-const CALLER_ERRORS: &[&str] = &[
-    "invalidArguments",
-    "unsupportedFilter",
-    "unsupportedSort",
-    "anchorNotFound",
-];
-
-/// `derived` keys: the mail account, and the thread's fetched email ids,
+/// `derived` keys beside the mail account's: the thread's fetched email ids,
 /// size and omitted count.
-const ACCOUNT_KEY: &str = "account_id";
 const EMAIL_IDS_KEY: &str = "email_ids";
 const MESSAGE_COUNT_KEY: &str = "message_count";
 const OMITTED_KEY: &str = "messages_omitted";
-
-/// The instance's `config`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Settings {
-    /// The `api_key_provider` every call names.
-    pub provider: String,
-    /// The `host[:port]` every call goes to.
-    pub host: String,
-}
-
-impl Settings {
-    /// Read the map through `get`. A missing or empty key, or a `host`
-    /// containing `/`, is an error naming the key.
-    pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Result<Settings, String> {
-        Ok(Settings {
-            provider: required(&get, "provider")?,
-            host: host(&get, "host")?,
-        })
-    }
-}
 
 impl Tool for Provided {
     fn name(self) -> &'static str {
@@ -259,9 +219,6 @@ impl ThreadArgs {
     }
 }
 
-/// The argument every tool takes beside its own.
-const ACCOUNT_ARG: &str = "account";
-
 fn parse(tool: Provided, args: &Value) -> Result<Parsed, String> {
     let keys = match tool {
         Provided::FastmailMailboxes => &[ACCOUNT_ARG],
@@ -280,66 +237,6 @@ fn parse(tool: Provided, args: &Value) -> Result<Parsed, String> {
         account: account_arg(map)?,
         tool,
     })
-}
-
-/// An account name argument: a lowercase letter, then lowercase letters,
-/// digits or `-`, not ending in `-`, at most `ACCOUNT_MAX_CHARS` in all.
-fn account_arg(args: &Args) -> Result<Option<String>, String> {
-    let is_name = |name: &str| {
-        let bytes = name.as_bytes();
-        (1..=ACCOUNT_MAX_CHARS).contains(&bytes.len())
-            && bytes[0].is_ascii_lowercase()
-            && bytes[bytes.len() - 1] != b'-'
-            && bytes
-                .iter()
-                .all(|&b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-    };
-    match args.get(ACCOUNT_ARG) {
-        None => Ok(None),
-        Some(Value::String(name)) if is_name(name) => Ok(Some(name.clone())),
-        Some(_) => Err(format!(
-            "`{ACCOUNT_ARG}` must be an account name: lowercase letters, digits and `-`, \
-             starting with a letter, not ending in `-`, at most {ACCOUNT_MAX_CHARS} characters"
-        )),
-    }
-}
-
-/// A JMAP id argument: 1 to `ID_MAX_CHARS` letters, digits, `_` or `-`.
-fn token(args: &Args, key: &str) -> Result<Option<String>, String> {
-    match args.get(key) {
-        None => Ok(None),
-        Some(Value::String(id))
-            if (1..=ID_MAX_CHARS).contains(&id.len())
-                && id
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') =>
-        {
-            Ok(Some(id.clone()))
-        }
-        Some(_) => Err(format!(
-            "`{key}` must be an id of 1 to {ID_MAX_CHARS} letters, digits, `_` or `-`"
-        )),
-    }
-}
-
-/// A keyword argument as `KEYWORD_PATTERN` states it, lower-cased: JMAP
-/// keywords are case-insensitive.
-fn keyword_arg(args: &Args, key: &str) -> Result<Option<String>, String> {
-    match args.get(key) {
-        None => Ok(None),
-        Some(Value::String(keyword))
-            if (1..=KEYWORD_MAX_CHARS).contains(&keyword.len())
-                && keyword
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"$_.-".contains(&b)) =>
-        {
-            Ok(Some(keyword.to_ascii_lowercase()))
-        }
-        Some(_) => Err(format!(
-            "`{key}` must be a keyword of 1 to {KEYWORD_MAX_CHARS} letters, digits, `$`, `_`, \
-             `.` or `-`"
-        )),
-    }
 }
 
 /// A date argument as an RFC 8620 `UTCDate`.
@@ -376,37 +273,7 @@ fn utc_date(text: &str) -> Option<String> {
 /// request's `invalid_args` detail, naming the argument.
 pub fn plan(tool: Provided, args: &Value, settings: &Settings) -> Result<Call, String> {
     let parsed = parse(tool, args)?;
-    Ok(Call {
-        step: SESSION_STEP,
-        api: api_call(
-            settings,
-            parsed.account.as_deref(),
-            "GET",
-            SESSION_PATH,
-            None,
-        ),
-    })
-}
-
-/// One nested call of a request: every call names the request's `account`, so
-/// each step is sent with the same key.
-fn api_call(
-    settings: &Settings,
-    account: Option<&str>,
-    method: &str,
-    path: &str,
-    body: Option<String>,
-) -> ApiCall {
-    ApiCall {
-        provider: settings.provider.clone(),
-        account: account.map(str::to_owned),
-        method: method.to_owned(),
-        host: settings.host.clone(),
-        path: path.to_owned(),
-        query: Query::new(),
-        headers: BTreeMap::new(),
-        body,
-    }
+    Ok(session_call(settings, parsed.account.as_deref()))
 }
 
 /// The step-2 request for `parsed` in `account_id`, and the call ids its
@@ -522,7 +389,7 @@ fn step(
     outcome: Result<Value, NestedError>,
     settings: &Settings,
 ) -> Result<Next, Failure> {
-    let body = answer_body(state, outcome)?;
+    let body = answer_body(state, outcome, unreadable_hint(state.tool, state.step))?;
     let parsed = parse(state.tool, &state.args).map_err(|reason| {
         internal(format!(
             "stored {} arguments no longer parse: {reason}",
@@ -530,20 +397,11 @@ fn step(
         ))
     })?;
     if state.step == SESSION_STEP {
-        let session = session::parse(&body).map_err(jmap_failure)?;
+        let session = read_session(&body)?;
         let (request, _) = api_request(&parsed.tool, &session.mail_account_id);
         let derived = Args::from_iter([(ACCOUNT_KEY.to_owned(), json!(session.mail_account_id))]);
         return Ok(Next::Call {
-            call: Call {
-                step: API_STEP,
-                api: api_call(
-                    settings,
-                    parsed.account.as_deref(),
-                    "POST",
-                    API_PATH,
-                    Some(request.to_body()),
-                ),
-            },
+            call: api_step(settings, parsed.account.as_deref(), API_STEP, &request),
             derived,
         });
     }
@@ -569,100 +427,6 @@ fn step(
             result(0)?,
         ),
     }
-}
-
-/// The JMAP JSON of a 2xx answer; every other answer is the request's
-/// failure.
-fn answer_body(state: &InFlight, outcome: Result<Value, NestedError>) -> Result<Value, Failure> {
-    match read_api_result(outcome, &state.target, API_NAME)? {
-        Answer::Body(body) => Ok(body),
-        Answer::NoBody { status } => Err(internal(format!(
-            "{API_NAME} answered HTTP {status} with no body, which JMAP never does"
-        ))),
-        Answer::Relay(_) => Err(internal(
-            "api-request answered with a credential relay, which an api_key_provider never sends",
-        )),
-        Answer::Unreadable(why) => {
-            Err(why.failure(API_NAME, unreadable_hint(state.tool, state.step)))
-        }
-        Answer::Error { status, body } => Err(http_failure(status, &body)),
-    }
-}
-
-/// Fastmail's HTTP error as the request's failure. The body is read only as
-/// a JMAP problem object and never copied otherwise.
-fn http_failure(status: u64, body: &str) -> Failure {
-    match status {
-        // TODO(restart-wording-after-key-reload): say "reload" once a Brenn
-        // release converges key files on reload, naming that version.
-        401 | 403 => internal(format!(
-            "{API_NAME} refused the token for this account (HTTP {status}): the operator \
-             must replace its key file and restart Brenn"
-        )),
-        429 => internal(format!(
-            "{API_NAME} is rate-limiting this deployment (HTTP 429); try again later"
-        )),
-        400..=499 => {
-            let problem = serde_json::from_str::<Value>(body)
-                .ok()
-                .as_ref()
-                .and_then(request_error);
-            match problem {
-                Some(problem) if problem.kind == LIMIT_ERROR => internal(format!(
-                    "{API_NAME}: {}; try again later",
-                    JmapError::Request(problem)
-                )),
-                Some(problem) => internal(format!("{API_NAME}: {}", JmapError::Request(problem))),
-                None => internal(format!("{API_NAME} answered HTTP {status}")),
-            }
-        }
-        _ => internal(format!("{API_NAME} answered HTTP {status}")),
-    }
-}
-
-/// A JMAP reading error as the request's failure: a method error the
-/// caller's arguments caused is `invalid_args`, everything else `internal`.
-fn jmap_failure(error: JmapError) -> Failure {
-    match &error {
-        JmapError::Session(_) => internal(format!(
-            "the {API_NAME} account cannot be read as mail: {error}"
-        )),
-        JmapError::Method { kind, .. } if CALLER_ERRORS.contains(&kind.as_str()) => {
-            invalid(format!("{API_NAME}: {error}"))
-        }
-        _ => internal(format!("{API_NAME}: {error}")),
-    }
-}
-
-fn invalid(detail: String) -> Failure {
-    Failure {
-        kind: ErrorKind::InvalidArgs,
-        detail,
-    }
-}
-
-fn derived_str<'a>(state: &'a InFlight, key: &str) -> Result<&'a str, Failure> {
-    state
-        .derived
-        .get(key)
-        .and_then(Value::as_str)
-        .ok_or_else(|| missing_derived(state, key))
-}
-
-fn derived_u64(state: &InFlight, key: &str) -> Result<u64, Failure> {
-    state
-        .derived
-        .get(key)
-        .and_then(Value::as_u64)
-        .ok_or_else(|| missing_derived(state, key))
-}
-
-fn missing_derived(state: &InFlight, key: &str) -> Failure {
-    internal(format!(
-        "in-flight row at {} step {} carries no `{key}`",
-        state.tool.name(),
-        state.step
-    ))
 }
 
 fn mailboxes(account_id: &str, args: &Value) -> Result<Next, Failure> {
@@ -910,10 +674,7 @@ fn thread(
         (OMITTED_KEY.to_owned(), json!(count - newest.len())),
     ]);
     Ok(Next::Call {
-        call: Call {
-            step: THREAD_EMAILS_STEP,
-            api: api_call(settings, account, "POST", API_PATH, Some(request.to_body())),
-        },
+        call: api_step(settings, account, THREAD_EMAILS_STEP, &request),
         derived,
     })
 }
@@ -1029,34 +790,25 @@ fn header_ids(out: &mut Args, key: &str, ids: &[String]) {
     }
 }
 
-/// `value` cut at `max_bytes` at `key`; nothing when absent.
-fn optional(out: &mut Args, key: &str, value: &Option<String>, max_bytes: usize) {
-    if let Some(value) = value {
-        out.insert(key.into(), json!(cut(value, max_bytes).0));
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use brenn_provider_kit::activation::BACKLOG_NS;
     use brenn_provider_kit::testutil::{Answered, MemoryHost, failure, http, nested, truncated};
+    use brenn_provider_kit::{ApiCall, ErrorKind, Query};
     use brenn_provider_kit::{
         Bound, CALL_BUDGET, Delivered, Input, Probes, Request as Incoming, ToolBounds, Unreadable,
         check, hold_probes, hold_required, input_schema, probes,
     };
-    use fastmail_jmap::session::{CORE, MAIL};
+    use fastmail_jmap::session::{API_PATH, CORE, MAIL, SESSION_PATH};
+    use fastmail_provider::failure::{CALLER_ERRORS, LIMIT_ERROR};
+    use fastmail_provider::steps::api_call;
+    use fastmail_provider::testutil::{
+        ACCOUNT_PATTERN, KEYWORD_PATTERN, account_probes, completed, jmap, keyword_probes,
+        session_body, settings,
+    };
     use serde_json::Map;
 
     use super::*;
-
-    fn settings() -> Settings {
-        Settings::from_lookup(|key| match key {
-            "provider" => Some("fastmail".to_owned()),
-            "host" => Some("api.fastmail.example.com".to_owned()),
-            _ => None,
-        })
-        .unwrap()
-    }
 
     /// The row of `tool` with `args` at `step`, carrying `derived`.
     fn row(tool: Provided, args: Value, step: u8, derived: Value) -> InFlight {
@@ -1082,31 +834,6 @@ mod tests {
         advance(state, outcome, &settings())
     }
 
-    fn session_body() -> Result<Value, NestedError> {
-        let session = json!({
-            "capabilities": { CORE: {}, MAIL: {} },
-            "accounts": { "a1": { "name": "alice@example.com" } },
-            "primaryAccounts": { MAIL: "a1" },
-            "apiUrl": "https://api.fastmail.example.com/jmap/api/",
-        });
-        http(200, &session.to_string())
-    }
-
-    /// A JMAP answer carrying `responses` as its `methodResponses`.
-    fn jmap(responses: Value) -> Result<Value, NestedError> {
-        http(
-            200,
-            &json!({ "methodResponses": responses, "sessionState": "s1" }).to_string(),
-        )
-    }
-
-    fn completed(next: Next) -> Value {
-        match next {
-            Next::Complete(value) => value,
-            other => panic!("not complete: {other:?}"),
-        }
-    }
-
     fn email(id: &str, received_at: &str) -> Value {
         json!({
             "id": id, "threadId": "t1", "mailboxIds": { "m1": true },
@@ -1129,36 +856,6 @@ mod tests {
     /// What `after` and `before` admit: a date, or a UTC instant to the
     /// second. `utc_date` enforces exactly this; `DATE_PROBES` hold it there.
     const DATE_PATTERN: &str = "^[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)?$";
-    /// What `keyword` and `not_keyword` admit. `keyword_arg` enforces exactly
-    /// this; `keyword_probes` hold it there.
-    const KEYWORD_PATTERN: &str = "^[A-Za-z0-9$_.-]{1,255}$";
-    /// What `account` admits. `account_arg` enforces exactly this;
-    /// `account_probes` hold it there.
-    const ACCOUNT_PATTERN: &str = "^[a-z]([a-z0-9-]{0,253}[a-z0-9])?$";
-
-    fn account_probes() -> Probes {
-        Probes {
-            admitted: vec![
-                json!("alice"),
-                json!("alice-work"),
-                json!("a1"),
-                json!("a"),
-                json!("a".repeat(255)),
-            ],
-            refused: vec![
-                json!(""),
-                json!("Alice"),
-                json!("alice_work"),
-                json!("a b"),
-                json!("1"),
-                json!("-a"),
-                json!("a-"),
-                json!("a".repeat(256)),
-                json!(1),
-            ],
-        }
-    }
-
     const DATE_PROBES: (&[&str], &[&str]) = (
         &["2026-11-08", "2026-11-08T10:00:00Z", "0001-01-01"],
         &[
@@ -1171,20 +868,6 @@ mod tests {
             "",
         ],
     );
-
-    fn keyword_probes() -> Probes {
-        Probes {
-            admitted: vec![json!("$seen"), json!("a.b_c-d"), json!("k".repeat(255))],
-            refused: vec![
-                json!("k".repeat(256)),
-                json!(""),
-                json!("a b"),
-                json!("a/b"),
-                json!("é"),
-                json!(1),
-            ],
-        }
-    }
 
     fn bounds(tool: Provided) -> ToolBounds<'static> {
         let (keys, required): (&'static [&'static str], &'static [&'static str]) = match tool {

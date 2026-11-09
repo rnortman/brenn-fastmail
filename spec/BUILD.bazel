@@ -4,7 +4,10 @@
 
 package(default_visibility = ["//visibility:public"])
 
-exports_files(["fastmail-mail-read.brenn"])
+exports_files([
+    "fastmail-mail-read.brenn",
+    "fastmail-mail-write.brenn",
+])
 
 # The root as one label, for the fit checks and for anyone assembling a module
 # root out of several. A glob: every .brenn file here is shipped by the

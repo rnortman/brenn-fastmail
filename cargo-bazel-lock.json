@@ -1,5 +1,5 @@
 {
-  "checksum": "869af6883cbbcb5d47ba16deb7b80867998479f0b1783405e5f22ba091af0cd2",
+  "checksum": "f1256c25055e45676c61d8b648d95221a9d7e87bb630557c11b01e4582382d0d",
   "crates": {
     "fastmail-jmap 0.2.0": {
       "name": "fastmail-jmap",
@@ -53,12 +53,67 @@
         "Apache-2.0"
       ],
       "license_file": null
+    },
+    "fastmail-mail-write 0.2.0": {
+      "name": "fastmail-mail-write",
+      "version": "0.2.0",
+      "package_url": null,
+      "repository": null,
+      "targets": [],
+      "library_target_name": null,
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "edition": "2024",
+        "version": "0.2.0"
+      },
+      "license": "Apache-2.0",
+      "license_ids": [
+        "Apache-2.0"
+      ],
+      "license_file": null
+    },
+    "fastmail-provider 0.2.0": {
+      "name": "fastmail-provider",
+      "version": "0.2.0",
+      "package_url": null,
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "fastmail_provider",
+            "crate_root": "src/lib.rs",
+            "srcs": {
+              "allow_empty": true,
+              "include": [
+                "**/*.rs"
+              ]
+            }
+          }
+        }
+      ],
+      "library_target_name": "fastmail_provider",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "edition": "2024",
+        "version": "0.2.0"
+      },
+      "license": "Apache-2.0",
+      "license_ids": [
+        "Apache-2.0"
+      ],
+      "license_file": null
     }
   },
   "binary_crates": [],
   "workspace_members": {
     "fastmail-jmap 0.2.0": "jmap",
-    "fastmail-mail-read 0.2.0": "fastmail-mail-read"
+    "fastmail-mail-read 0.2.0": "fastmail-mail-read",
+    "fastmail-mail-write 0.2.0": "fastmail-mail-write",
+    "fastmail-provider 0.2.0": "provider"
   },
   "conditions": {
     "wasm32-unknown-unknown": [

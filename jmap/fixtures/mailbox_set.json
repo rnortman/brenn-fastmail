@@ -1,0 +1,16 @@
+{
+  "accountId": "a1",
+  "oldState": "s1",
+  "newState": "s2",
+  "created": {"mailbox": {"id": "m7", "sortOrder": 0, "totalEmails": 0}},
+  "updated": {"m2": null},
+  "notUpdated": {
+    "m3": {
+      "type": "invalidProperties",
+      "description": "a sibling already has this name",
+      "properties": ["name"]
+    }
+  },
+  "destroyed": null,
+  "notDestroyed": null
+}

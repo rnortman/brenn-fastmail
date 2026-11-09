@@ -15,6 +15,7 @@ wasm_guest_cdylib(
     generated_srcs = {"src/spec.rs": ":spec"},
     deps = [
         "//jmap:fastmail_jmap",
+        "//provider:fastmail_provider",
         "@brenn//brenn-provider-kit:brenn-provider-kit_guest",
         "@brenn//brenn-wasm/components/guest:brenn-guest",
         "@brenn//brenn-wasm/components/guest:serde",
@@ -30,11 +31,11 @@ wasm_component(
 )
 
 # Argument validation, request assembly, answer reading and compaction are
-# std, serde_json, the JMAP crate and the provider kit only, so they run on
-# the host; the glue in lib.rs needs the guest SDK and builds for wasm32
-# alone. The generated `spec` module compiles here too, since its SDK-facing
-# items are wasm32-only. The test reads the specification it holds the input
-# schemas to from the path in FASTMAIL_MAIL_READ_SPEC.
+# std, serde_json, the JMAP crate, the shared provider crate and the provider
+# kit only, so they run on the host; the glue in lib.rs needs the guest SDK and
+# builds for wasm32 alone. The generated `spec` module compiles here too, since
+# its SDK-facing items are wasm32-only. The test reads the specification it
+# holds the input schemas to from the path in FASTMAIL_MAIL_READ_SPEC.
 rust_test(
     name = "logic_test",
     size = "small",
@@ -49,6 +50,7 @@ rust_test(
     env = {"FASTMAIL_MAIL_READ_SPEC": "$(rootpath //spec:fastmail-mail-read.brenn)"},
     deps = [
         "//jmap:fastmail_jmap",
+        "//provider:fastmail_provider",
         "@brenn//brenn-provider-kit:brenn-provider-kit_guest",
         "@brenn//brenn-wasm/components/guest:serde",
         "@brenn//brenn-wasm/components/guest:serde_json",

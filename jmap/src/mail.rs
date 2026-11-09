@@ -1,8 +1,9 @@
 //! The mail methods this crate builds and reads (RFC 8621): `Mailbox/get`,
-//! `Email/query`, `Email/get` and `Thread/get`. Each builder pushes one call
-//! with its own method name; each reader takes the arguments
-//! `Response::result` returned for that call and refuses any value whose type
-//! is not the one RFC 8621 gives the property.
+//! `Mailbox/query`, `Mailbox/set`, `Email/query`, `Email/get`, `Email/set`,
+//! `Thread/get` and `Identity/get`. Each builder pushes one call with its own
+//! method name; each reader takes the arguments `Response::result` returned
+//! for that call and refuses any value whose type is not the one RFC 8621
+//! gives the property.
 
 use std::collections::BTreeMap;
 
@@ -10,6 +11,7 @@ use serde_json::{Map, Value, json};
 
 use crate::error::Error;
 use crate::request::{CallId, Request};
+use crate::set::{Patch, SetResult};
 
 /// The properties `Mailbox/get` asks for; `Mailbox::list` reads these.
 pub const MAILBOX_PROPERTIES: &[&str] = &[
@@ -63,6 +65,18 @@ pub const READ_PROPERTIES: &[&str] = &[
     "textBody",
     "attachments",
     "bodyValues",
+];
+
+/// What a draft reads of the email it replies to: where to address the
+/// reply, its subject, and its threading headers.
+pub const DRAFT_LOOKUP_PROPERTIES: &[&str] = &[
+    "id",
+    "threadId",
+    "from",
+    "replyTo",
+    "subject",
+    "messageId",
+    "references",
 ];
 
 /// `Mailbox/get` over every mailbox in the account (`ids` null).
@@ -238,8 +252,8 @@ impl EmailQuery<'_> {
     }
 }
 
-/// An `Email/query` result: the ids in sort order from `position`, and the
-/// total when it was asked for.
+/// A `/query` result (`Email/query`, `Mailbox/query`): the ids in sort order
+/// from `position`, and the total when it was asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryResult {
     pub ids: Vec<String>,
@@ -249,7 +263,7 @@ pub struct QueryResult {
 
 impl QueryResult {
     pub fn read(args: &Value) -> Result<QueryResult, Error> {
-        let f = Fields::of(args, "Email/query result")?;
+        let f = Fields::of(args, "query result")?;
         Ok(QueryResult {
             ids: f.required_strings("ids")?,
             position: f.u64("position")?,
@@ -326,7 +340,14 @@ impl Address {
         }
     }
 
-    fn read(value: &Value) -> Result<Address, Error> {
+    /// The address as an `EmailAddress` object, `name` null when absent.
+    pub fn to_value(&self) -> Value {
+        json!({"name": self.name, "email": self.email})
+    }
+
+    /// An `EmailAddress` object as `to_value` writes it and JMAP answers it:
+    /// `email` a string, `name` a string, null or absent.
+    pub fn from_value(value: &Value) -> Result<Address, Error> {
         let f = Fields::of(value, "EmailAddress")?;
         Ok(Address {
             name: f.opt_string("name")?,
@@ -429,11 +450,11 @@ impl Email {
             size: f.opt_u64("size")?,
             received_at: f.opt_string("receivedAt")?,
             sent_at: f.opt_string("sentAt")?,
-            from: f.list("from", Address::read)?,
-            to: f.list("to", Address::read)?,
-            cc: f.list("cc", Address::read)?,
-            bcc: f.list("bcc", Address::read)?,
-            reply_to: f.list("replyTo", Address::read)?,
+            from: f.list("from", Address::from_value)?,
+            to: f.list("to", Address::from_value)?,
+            cc: f.list("cc", Address::from_value)?,
+            bcc: f.list("bcc", Address::from_value)?,
+            reply_to: f.list("replyTo", Address::from_value)?,
             subject: f.opt_string("subject")?,
             preview: f.opt_string("preview")?,
             has_attachment: f.opt_bool("hasAttachment")?,
@@ -488,6 +509,277 @@ impl Thread {
     }
 }
 
+/// A new email in the creation form RFC 8621 section 4.6 gives it: one
+/// `text/plain` body part whose value is `text`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EmailCreate {
+    pub mailbox_ids: Vec<String>,
+    pub keywords: Vec<String>,
+    pub from: Vec<Address>,
+    pub to: Vec<Address>,
+    pub cc: Vec<Address>,
+    pub bcc: Vec<Address>,
+    pub reply_to: Vec<Address>,
+    pub subject: Option<String>,
+    pub in_reply_to: Vec<String>,
+    pub references: Vec<String>,
+    pub text: String,
+}
+
+impl EmailCreate {
+    /// The object a `create` entry carries. An empty address or id list and
+    /// an absent subject are left out.
+    pub fn to_value(&self) -> Value {
+        let mut email = Map::new();
+        email.insert("mailboxIds".into(), true_set(&self.mailbox_ids));
+        email.insert("keywords".into(), true_set(&self.keywords));
+        let addresses = [
+            ("from", &self.from),
+            ("to", &self.to),
+            ("cc", &self.cc),
+            ("bcc", &self.bcc),
+            ("replyTo", &self.reply_to),
+        ];
+        for (key, list) in addresses {
+            if !list.is_empty() {
+                let list: Vec<Value> = list.iter().map(Address::to_value).collect();
+                email.insert(key.into(), Value::Array(list));
+            }
+        }
+        if let Some(subject) = &self.subject {
+            email.insert("subject".into(), json!(subject));
+        }
+        for (key, ids) in [
+            ("inReplyTo", &self.in_reply_to),
+            ("references", &self.references),
+        ] {
+            if !ids.is_empty() {
+                email.insert(key.into(), json!(ids));
+            }
+        }
+        email.insert(
+            "textBody".into(),
+            json!([{"partId": "1", "type": "text/plain"}]),
+        );
+        email.insert("bodyValues".into(), json!({"1": {"value": self.text}}));
+        Value::Object(email)
+    }
+}
+
+/// `Email/set` (RFC 8621 section 4.6): creates and updates. Nothing here
+/// destroys.
+#[derive(Debug, Clone)]
+pub struct EmailSet<'a> {
+    pub account_id: &'a str,
+    /// Creation id → the new email.
+    pub create: Vec<(String, EmailCreate)>,
+    /// Email id → its patch.
+    pub update: Vec<(String, Patch)>,
+}
+
+impl EmailSet<'_> {
+    pub const METHOD: &'static str = "Email/set";
+
+    /// `create` and `update` each appear only when non-empty.
+    pub fn args(&self) -> Value {
+        set_args(
+            self.account_id,
+            self.create
+                .iter()
+                .map(|(cid, email)| (cid.clone(), email.to_value())),
+            &self.update,
+        )
+    }
+
+    pub fn push(&self, request: &mut Request) -> CallId {
+        request.push(Self::METHOD, self.args())
+    }
+
+    /// Reads the result of an `Email/set`.
+    pub fn result(args: &Value) -> Result<SetResult<EmailCreated>, Error> {
+        SetResult::read(args, EmailCreated::read)
+    }
+}
+
+/// What the server set on a created email that this crate reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmailCreated {
+    pub id: String,
+    pub thread_id: Option<String>,
+}
+
+impl EmailCreated {
+    fn read(value: &Value) -> Result<EmailCreated, Error> {
+        let f = Fields::of(value, "created Email")?;
+        Ok(EmailCreated {
+            id: f.string("id")?,
+            thread_id: f.opt_string("threadId")?,
+        })
+    }
+}
+
+/// `Mailbox/query` (RFC 8621 section 2.3) for the mailbox with a role.
+#[derive(Debug, Clone)]
+pub struct MailboxQuery<'a> {
+    pub account_id: &'a str,
+    pub role: &'a str,
+}
+
+impl MailboxQuery<'_> {
+    pub const METHOD: &'static str = "Mailbox/query";
+
+    pub fn args(&self) -> Value {
+        json!({"accountId": self.account_id, "filter": {"role": self.role}})
+    }
+
+    pub fn push(&self, request: &mut Request) -> CallId {
+        request.push(Self::METHOD, self.args())
+    }
+}
+
+/// A new mailbox; `parentId` is left out (top level) when `None`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MailboxCreate {
+    pub name: String,
+    pub parent_id: Option<String>,
+}
+
+impl MailboxCreate {
+    pub fn to_value(&self) -> Value {
+        let mut mailbox = Map::new();
+        mailbox.insert("name".into(), json!(self.name));
+        if let Some(parent_id) = &self.parent_id {
+            mailbox.insert("parentId".into(), json!(parent_id));
+        }
+        Value::Object(mailbox)
+    }
+}
+
+/// `Mailbox/set` (RFC 8621 section 2.5): creates and updates. Nothing here
+/// destroys.
+#[derive(Debug, Clone)]
+pub struct MailboxSet<'a> {
+    pub account_id: &'a str,
+    /// Creation id → the new mailbox.
+    pub create: Vec<(String, MailboxCreate)>,
+    /// Mailbox id → its patch.
+    pub update: Vec<(String, Patch)>,
+}
+
+impl MailboxSet<'_> {
+    pub const METHOD: &'static str = "Mailbox/set";
+
+    /// `create` and `update` each appear only when non-empty.
+    pub fn args(&self) -> Value {
+        set_args(
+            self.account_id,
+            self.create
+                .iter()
+                .map(|(cid, mailbox)| (cid.clone(), mailbox.to_value())),
+            &self.update,
+        )
+    }
+
+    pub fn push(&self, request: &mut Request) -> CallId {
+        request.push(Self::METHOD, self.args())
+    }
+
+    /// Reads the result of a `Mailbox/set`.
+    pub fn result(args: &Value) -> Result<SetResult<MailboxCreated>, Error> {
+        SetResult::read(args, MailboxCreated::read)
+    }
+}
+
+/// What the server set on a created mailbox that this crate reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MailboxCreated {
+    pub id: String,
+}
+
+impl MailboxCreated {
+    fn read(value: &Value) -> Result<MailboxCreated, Error> {
+        Ok(MailboxCreated {
+            id: Fields::of(value, "created Mailbox")?.string("id")?,
+        })
+    }
+}
+
+/// `Identity/get` (RFC 8621 section 6.1) over every identity in the account.
+#[derive(Debug, Clone)]
+pub struct IdentityGet<'a> {
+    pub account_id: &'a str,
+}
+
+impl IdentityGet<'_> {
+    pub const METHOD: &'static str = "Identity/get";
+
+    pub fn args(&self) -> Value {
+        json!({"accountId": self.account_id, "ids": null})
+    }
+
+    pub fn push(&self, request: &mut Request) -> CallId {
+        request.push(Self::METHOD, self.args())
+    }
+}
+
+/// A sending identity (RFC 8621 section 6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Identity {
+    pub id: String,
+    pub name: Option<String>,
+    pub email: String,
+    pub may_delete: Option<bool>,
+}
+
+impl Identity {
+    /// The identities in an `Identity/get` result.
+    pub fn get(args: &Value) -> Result<GetResult<Identity>, Error> {
+        read_get(args, Identity::read)
+    }
+
+    fn read(value: &Value) -> Result<Identity, Error> {
+        let f = Fields::of(value, "Identity")?;
+        Ok(Identity {
+            id: f.string("id")?,
+            name: f.opt_string("name")?,
+            email: f.string("email")?,
+            may_delete: f.opt_bool("mayDelete")?,
+        })
+    }
+}
+
+/// An `Id[Boolean]` set with every member `true`.
+fn true_set(ids: &[String]) -> Value {
+    Value::Object(
+        ids.iter()
+            .map(|id| (id.clone(), Value::Bool(true)))
+            .collect(),
+    )
+}
+
+/// The arguments of a `/set` with creates and updates, each map present only
+/// when non-empty.
+fn set_args(
+    account_id: &str,
+    create: impl Iterator<Item = (String, Value)>,
+    update: &[(String, Patch)],
+) -> Value {
+    let mut args = Map::new();
+    args.insert("accountId".into(), json!(account_id));
+    let create: Map<String, Value> = create.collect();
+    if !create.is_empty() {
+        args.insert("create".into(), Value::Object(create));
+    }
+    if !update.is_empty() {
+        let update: Map<String, Value> = update
+            .iter()
+            .map(|(id, patch)| (id.clone(), patch.to_value()))
+            .collect();
+        args.insert("update".into(), Value::Object(update));
+    }
+    Value::Object(args)
+}
+
 /// Reads a `/get` result (RFC 8620 section 5.1): `list` through `read`, and
 /// `notFound`.
 fn read_get<T>(args: &Value, read: fn(&Value) -> Result<T, Error>) -> Result<GetResult<T>, Error> {
@@ -509,34 +801,34 @@ fn read_get<T>(args: &Value, read: fn(&Value) -> Result<T, Error>) -> Result<Get
 /// An object's properties, read with the type RFC 8621 gives each. A
 /// property of the wrong type is `Error::Shape` naming the object and the
 /// property; "absent" below means absent or null.
-struct Fields<'a> {
+pub(crate) struct Fields<'a> {
     object: &'a Map<String, Value>,
     what: &'static str,
 }
 
 impl<'a> Fields<'a> {
-    fn of(value: &'a Value, what: &'static str) -> Result<Fields<'a>, Error> {
+    pub(crate) fn of(value: &'a Value, what: &'static str) -> Result<Fields<'a>, Error> {
         let object = value
             .as_object()
             .ok_or_else(|| Error::Shape(format!("{what} is not an object")))?;
         Ok(Fields { object, what })
     }
 
-    fn shape(&self, key: &str, problem: &str) -> Error {
+    pub(crate) fn shape(&self, key: &str, problem: &str) -> Error {
         Error::Shape(format!("{}.{key} {problem}", self.what))
     }
 
     /// The property, `None` when absent.
-    fn get(&self, key: &str) -> Option<&'a Value> {
+    pub(crate) fn get(&self, key: &str) -> Option<&'a Value> {
         self.object.get(key).filter(|value| !value.is_null())
     }
 
-    fn string(&self, key: &str) -> Result<String, Error> {
+    pub(crate) fn string(&self, key: &str) -> Result<String, Error> {
         self.opt_string(key)?
             .ok_or_else(|| self.shape(key, "is missing"))
     }
 
-    fn opt_string(&self, key: &str) -> Result<Option<String>, Error> {
+    pub(crate) fn opt_string(&self, key: &str) -> Result<Option<String>, Error> {
         self.get(key)
             .map(|value| {
                 value
@@ -590,7 +882,7 @@ impl<'a> Fields<'a> {
     }
 
     /// A string list; empty when absent.
-    fn strings(&self, key: &str) -> Result<Vec<String>, Error> {
+    pub(crate) fn strings(&self, key: &str) -> Result<Vec<String>, Error> {
         if self.get(key).is_none() {
             return Ok(Vec::new());
         }
@@ -613,7 +905,7 @@ impl<'a> Fields<'a> {
     }
 
     /// An object of values through `read`, by key; empty when absent.
-    fn map<T>(
+    pub(crate) fn map<T>(
         &self,
         key: &str,
         read: fn(&Value) -> Result<T, Error>,
@@ -652,6 +944,7 @@ mod tests {
     use super::*;
     use crate::request::result_ref;
     use crate::response::Response;
+    use crate::set::SetError;
 
     fn fixture(text: &str) -> Value {
         serde_json::from_str(text).unwrap()
@@ -1107,5 +1400,365 @@ mod tests {
         assert_eq!(named.display(), "Alice Example <alice@example.com>");
         assert_eq!(empty.display(), "alice@example.com");
         assert_eq!(none.display(), "alice@example.com");
+    }
+
+    fn alice() -> Address {
+        Address {
+            name: Some("Alice Example".into()),
+            email: "alice@example.com".into(),
+        }
+    }
+
+    #[test]
+    fn an_address_object_round_trips_with_a_null_name_when_absent() {
+        assert_eq!(
+            alice().to_value(),
+            json!({"name": "Alice Example", "email": "alice@example.com"})
+        );
+        let bare = Address {
+            name: None,
+            email: "bob@example.com".into(),
+        };
+        assert_eq!(
+            bare.to_value(),
+            json!({"name": null, "email": "bob@example.com"})
+        );
+        for address in [alice(), bare] {
+            assert_eq!(Address::from_value(&address.to_value()), Ok(address));
+        }
+        assert_eq!(
+            Address::from_value(&json!({"email": "bob@example.com"})).map(|a| a.name),
+            Ok(None)
+        );
+        for malformed in [
+            json!("bob@example.com"),
+            json!({"name": "Bob"}),
+            json!({"name": 1, "email": "bob@example.com"}),
+            json!({"email": null}),
+        ] {
+            assert!(
+                matches!(Address::from_value(&malformed), Err(Error::Shape(_))),
+                "{malformed}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_new_email_is_one_text_part_with_its_headers() {
+        let email = EmailCreate {
+            mailbox_ids: vec!["m5".into()],
+            keywords: vec!["$draft".into(), "$seen".into()],
+            from: vec![alice()],
+            to: vec![Address {
+                name: None,
+                email: "bob@example.com".into(),
+            }],
+            cc: vec![Address {
+                name: None,
+                email: "carol@example.com".into(),
+            }],
+            bcc: vec![Address {
+                name: None,
+                email: "dave@example.com".into(),
+            }],
+            reply_to: vec![alice()],
+            subject: Some("Re: lunch".into()),
+            in_reply_to: vec!["m2@example.com".into()],
+            references: vec!["m1@example.com".into(), "m2@example.com".into()],
+            text: "Friday works.\n".into(),
+        };
+        assert_eq!(
+            email.to_value(),
+            json!({
+                "mailboxIds": {"m5": true},
+                "keywords": {"$draft": true, "$seen": true},
+                "from": [{"name": "Alice Example", "email": "alice@example.com"}],
+                "to": [{"name": null, "email": "bob@example.com"}],
+                "cc": [{"name": null, "email": "carol@example.com"}],
+                "bcc": [{"name": null, "email": "dave@example.com"}],
+                "replyTo": [{"name": "Alice Example", "email": "alice@example.com"}],
+                "subject": "Re: lunch",
+                "inReplyTo": ["m2@example.com"],
+                "references": ["m1@example.com", "m2@example.com"],
+                "textBody": [{"partId": "1", "type": "text/plain"}],
+                "bodyValues": {"1": {"value": "Friday works.\n"}}
+            })
+        );
+    }
+
+    #[test]
+    fn a_new_email_leaves_out_empty_headers() {
+        let email = EmailCreate {
+            mailbox_ids: vec!["m5".into()],
+            text: "hi".into(),
+            ..EmailCreate::default()
+        };
+        assert_eq!(
+            email.to_value(),
+            json!({
+                "mailboxIds": {"m5": true},
+                "keywords": {},
+                "textBody": [{"partId": "1", "type": "text/plain"}],
+                "bodyValues": {"1": {"value": "hi"}}
+            })
+        );
+    }
+
+    #[test]
+    fn an_email_set_sends_only_its_non_empty_parts() {
+        let mut request = Request::mail();
+        let call = EmailSet {
+            account_id: "a1",
+            create: vec![],
+            update: vec![
+                ("e1".into(), Patch::new().keyword("$seen", true)),
+                ("e2".into(), Patch::new().mailbox("m1", false)),
+            ],
+        }
+        .push(&mut request);
+        assert_eq!(call.name(), "Email/set");
+        assert_eq!(
+            body(&request)["methodCalls"],
+            json!([["Email/set", {
+                "accountId": "a1",
+                "update": {
+                    "e1": {"keywords/$seen": true},
+                    "e2": {"mailboxIds/m1": null}
+                }
+            }, "c0"]])
+        );
+        let create = EmailSet {
+            account_id: "a1",
+            create: vec![(
+                "draft".into(),
+                EmailCreate {
+                    mailbox_ids: vec!["m5".into()],
+                    text: "hi".into(),
+                    ..EmailCreate::default()
+                },
+            )],
+            update: vec![],
+        }
+        .args();
+        assert_eq!(create.get("update"), None);
+        assert_eq!(create["create"]["draft"]["mailboxIds"], json!({"m5": true}));
+        let empty = EmailSet {
+            account_id: "a1",
+            create: vec![],
+            update: vec![],
+        };
+        assert_eq!(empty.args(), json!({"accountId": "a1"}));
+    }
+
+    #[test]
+    fn an_email_set_result_reads_the_created_ids_and_each_refusal() {
+        let result =
+            EmailSet::result(&fixture(include_str!("../fixtures/email_set.json"))).unwrap();
+        assert_eq!(
+            result.created,
+            BTreeMap::from([(
+                "draft".to_owned(),
+                EmailCreated {
+                    id: "e9".into(),
+                    thread_id: Some("t4".into()),
+                }
+            )])
+        );
+        assert_eq!(result.updated, vec!["e1".to_owned(), "e2".to_owned()]);
+        assert_eq!(result.not_created["other"].kind, "overQuota");
+        assert_eq!(
+            result.not_updated["e3"],
+            SetError {
+                kind: "invalidProperties".into(),
+                description: Some("an email must be in at least one mailbox".into()),
+                properties: vec!["mailboxIds".into()],
+            }
+        );
+        assert_eq!(
+            result.not_updated["e4"],
+            SetError {
+                kind: "notFound".into(),
+                description: None,
+                properties: vec![],
+            }
+        );
+        for created in [
+            json!({}),
+            json!({"id": 7}),
+            json!({"id": "e9", "threadId": 4}),
+        ] {
+            let args = json!({"created": {"draft": created}});
+            assert!(
+                matches!(EmailSet::result(&args), Err(Error::Shape(_))),
+                "{args}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_mailbox_query_filters_by_role_and_reads_as_a_query() {
+        let mut request = Request::mail();
+        let call = MailboxQuery {
+            account_id: "a1",
+            role: "drafts",
+        }
+        .push(&mut request);
+        assert_eq!(call.name(), "Mailbox/query");
+        assert_eq!(
+            body(&request)["methodCalls"],
+            json!([["Mailbox/query", {"accountId": "a1", "filter": {"role": "drafts"}}, "c0"]])
+        );
+        assert_eq!(
+            QueryResult::read(&fixture(include_str!("../fixtures/mailbox_query.json"))).unwrap(),
+            QueryResult {
+                ids: vec!["m5".into()],
+                position: 0,
+                total: None,
+            }
+        );
+    }
+
+    #[test]
+    fn a_mailbox_set_creates_and_renames() {
+        let mut request = Request::mail();
+        let call = MailboxSet {
+            account_id: "a1",
+            create: vec![
+                (
+                    "mailbox".into(),
+                    MailboxCreate {
+                        name: "Receipts".into(),
+                        parent_id: Some("m1".into()),
+                    },
+                ),
+                (
+                    "top".into(),
+                    MailboxCreate {
+                        name: "Projects".into(),
+                        parent_id: None,
+                    },
+                ),
+            ],
+            update: vec![(
+                "m2".into(),
+                Patch::new()
+                    .property("name", json!("Old receipts"))
+                    .property("parentId", Value::Null),
+            )],
+        }
+        .push(&mut request);
+        assert_eq!(call.name(), "Mailbox/set");
+        assert_eq!(
+            body(&request)["methodCalls"],
+            json!([["Mailbox/set", {
+                "accountId": "a1",
+                "create": {
+                    "mailbox": {"name": "Receipts", "parentId": "m1"},
+                    "top": {"name": "Projects"}
+                },
+                "update": {"m2": {"name": "Old receipts", "parentId": null}}
+            }, "c0"]])
+        );
+        let result =
+            MailboxSet::result(&fixture(include_str!("../fixtures/mailbox_set.json"))).unwrap();
+        assert_eq!(
+            result.created,
+            BTreeMap::from([("mailbox".to_owned(), MailboxCreated { id: "m7".into() })])
+        );
+        assert_eq!(result.updated, vec!["m2".to_owned()]);
+        assert_eq!(result.not_updated["m3"].properties, vec!["name".to_owned()]);
+        assert!(matches!(
+            MailboxSet::result(&json!({"created": {"mailbox": {"name": "x"}}})),
+            Err(Error::Shape(_))
+        ));
+    }
+
+    #[test]
+    fn identities_are_read_from_every_identity_in_the_account() {
+        let mut request = Request::mail_with_submission();
+        let call = IdentityGet { account_id: "a1" }.push(&mut request);
+        assert_eq!(call.name(), "Identity/get");
+        assert_eq!(
+            body(&request)["methodCalls"],
+            json!([["Identity/get", {"accountId": "a1", "ids": null}, "c0"]])
+        );
+        let result =
+            Identity::get(&fixture(include_str!("../fixtures/identity_get.json"))).unwrap();
+        assert!(result.not_found.is_empty());
+        assert_eq!(
+            result.list,
+            vec![
+                Identity {
+                    id: "i1".into(),
+                    name: Some("Alice Example".into()),
+                    email: "alice@example.com".into(),
+                    may_delete: Some(false),
+                },
+                Identity {
+                    id: "i2".into(),
+                    name: Some(String::new()),
+                    email: "*@example.org".into(),
+                    may_delete: Some(true),
+                },
+                Identity {
+                    id: "i3".into(),
+                    name: None,
+                    email: "alias@example.net".into(),
+                    may_delete: None,
+                },
+            ]
+        );
+        for identity in [
+            json!({"id": "i1"}),
+            json!({"email": "alice@example.com"}),
+            json!({"id": "i1", "email": "alice@example.com", "mayDelete": "no"}),
+            json!({"id": "i1", "email": "alice@example.com", "name": 7}),
+        ] {
+            let args = json!({"list": [identity], "notFound": []});
+            assert!(
+                matches!(Identity::get(&args), Err(Error::Shape(_))),
+                "{identity}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_draft_lookup_reads_the_originals_threading_and_addresses() {
+        let args = EmailGet {
+            account_id: "a1",
+            ids: Ids::Listed(vec!["e1".into()]),
+            properties: DRAFT_LOOKUP_PROPERTIES,
+            fetch_text_body_values: false,
+            max_body_value_bytes: None,
+        }
+        .args();
+        assert_eq!(
+            args["properties"],
+            json!([
+                "id",
+                "threadId",
+                "from",
+                "replyTo",
+                "subject",
+                "messageId",
+                "references"
+            ])
+        );
+        let result = Email::get(&json!({
+            "list": [{
+                "id": "e1", "threadId": "t1",
+                "from": [{"name": "Bob", "email": "bob@example.com"}],
+                "replyTo": [{"name": null, "email": "list@example.com"}],
+                "subject": "lunch",
+                "messageId": ["m2@example.com"],
+                "references": ["m1@example.com"]
+            }],
+            "notFound": []
+        }))
+        .unwrap();
+        let [original] = <[Email; 1]>::try_from(result.list).unwrap();
+        assert_eq!(original.reply_to[0].email, "list@example.com");
+        assert_eq!(original.message_id, vec!["m2@example.com".to_owned()]);
+        assert_eq!(original.references, vec!["m1@example.com".to_owned()]);
     }
 }

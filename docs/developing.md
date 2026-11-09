@@ -75,15 +75,29 @@ pin irrelevant. `make check` prints a notice while the line is in force.
 - `jmap/` — `fastmail-jmap`, the JMAP crate. No I/O: it builds request bodies
   and reads answers, and is compiled for the host (its tests) and for wasm32
   (inside a component).
-- `spec/` — the component's authored specification, the module root a
-  deployment's `use @fastmail-mail-read::*;` resolves against.
-- `fastmail-mail-read/` — the provider: `src/logic.rs` (arguments, JMAP
+- `provider/` — `fastmail-provider`, the plumbing the provider components
+  share: settings, the `account`, id and keyword arguments, the session step
+  and the API call, and the mapping of Fastmail's answers onto the request's
+  failure. One target serves the components' wasm32 builds and their host
+  tests; its `testutil` module carries those tests' fixtures.
+- `spec/` — the components' authored specifications, the module root a
+  deployment's `use @fastmail-mail-read::*;` and
+  `use @fastmail-mail-write::*;` resolve against.
+- `fastmail-mail-read/` — the read provider: `src/logic.rs` (arguments, JMAP
   requests, answers and compaction, all host-testable), `src/html.rs` (HTML
   parts as plain text) and `src/lib.rs` (the guest glue).
-- `config/example.brenn` — the deployer's document: the key provider, the
-  instance with its clauses and an agent granted the tools. `//:example_fit`
-  compiles it and `//:config_check` lowers it, so the README's excerpts cannot
-  drift from what brenn accepts.
+- `fastmail-mail-write/` — the write provider: `src/logic.rs` (organize and
+  the mailbox tools, the step machine, all host-testable), `src/draft.rs`
+  (the draft tool's arguments and three steps) and `src/lib.rs` (the guest
+  glue).
+- `config/example.brenn` — the deployer's document: the two key providers,
+  the two instances with their clauses and an agent granted the tools.
+  `//:example_fit` compiles it and `//:config_check` lowers it, so the
+  example's shape and settings cannot drift from what brenn accepts; neither
+  holds the agent's `tool` grants to the tools the instances provide, which
+  are checked by hand against the specifications' `provide` names. The
+  README's excerpts are copied from it by hand,
+  and no target compares them with it.
 - `deployed-components.txt` — the packages the bundle ships, held equal to
   the `component_package` targets by `//:deployed_components_test`.
 - `tools/config_check.sh` — `brenn config-check` over the example document.

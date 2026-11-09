@@ -1,12 +1,15 @@
-// The document a deployer copies from: the Fastmail key provider, the
-// `fastmail-mail-read` instance with the two clauses it calls through, and an
-// agent granted its four tools.
+// The document a deployer copies from: two Fastmail key providers, one
+// holding read-only tokens and one holding read-write tokens; the
+// `fastmail-mail-read` and `fastmail-mail-write` instances, each with the two
+// clauses it calls through on its own provider; and an agent granted the eight
+// tools.
 //
 // `example_fit` compiles it against the two module roots a host resolves it
 // from, this bundle's and brenn's; `config_check` lowers it with the verb an
 // installer runs. Neither reads a key file or touches a path, so the paths
 // below are a deployment's shape, not files this checkout holds.
 use @fastmail-mail-read::*;
+use @fastmail-mail-write::*;
 
 server {
   bind_address = "127.0.0.1:3000";
@@ -51,10 +54,11 @@ container sandbox {
   home_dir = "/var/lib/brenn/home";
 }
 
-/// One `account` per Fastmail account, each bound to the brenn user whose
-/// mail it is; a tool reads the calling user's. Each key file holds
-/// `Bearer <token>`, mode 0600, owned by the brenn user; the token is a
-/// Fastmail API token with read-only mail access. alice has two accounts and
+/// The read component's tokens. One `account` per Fastmail account, each
+/// bound to the brenn user whose mail it is; a tool reads the calling user's.
+/// Each key file holds `Bearer <token>`, mode 0600, owned by the brenn user;
+/// the token is a Fastmail API token with read-only mail access, so nothing
+/// the read instance does can change the account. alice has two accounts and
 /// reads `alice` unless a call names `alice-work`; bob has one. Every user
 /// named must be registered before boot. A key provider is read at boot, so
 /// changing this block takes a restart.
@@ -73,6 +77,28 @@ api_key_provider fastmail {
   account bob {
     user = "bob";
     key_file = "/etc/brenn/fastmail/bob";
+  }
+}
+
+/// The write component's tokens: the same accounts under the same names and
+/// with the same `default`, so an agent's `account`, or its omission, means
+/// the same mailbox to both components, each key file holding a Fastmail API
+/// token with read-write access to mail.
+api_key_provider fastmail-write {
+  header = "Authorization";
+  api_hosts = ["https://api.fastmail.com"];
+  account alice {
+    user = "alice";
+    key_file = "/etc/brenn/fastmail-write/alice";
+    default = true;
+  }
+  account alice-work {
+    user = "alice";
+    key_file = "/etc/brenn/fastmail-write/alice-work";
+  }
+  account bob {
+    user = "bob";
+    key_file = "/etc/brenn/fastmail-write/bob";
   }
 }
 
@@ -103,6 +129,32 @@ new fastmail_mail: FastmailMailRead {
   };
 }
 
+// The write class's summed `max_concurrency` is 6, so 2 × 6 = 12 fits the
+// family default of 16; the block is declared so `noise = alarm` holds.
+channel at "brenn:tool-results/fastmail_mail_write" {
+  push_depth = 1;
+  retain_depth = 16;
+  standing_retain_depth = 16;
+  noise = alarm;
+}
+
+/// Every tool reads the session document, then posts one JMAP envelope; a
+/// draft posts a second, its write. The instance calls through the
+/// read-write provider.
+new fastmail_mail_write: FastmailMailWrite {
+  grants = [log, store, config, tools, provides];
+  store_path = "/var/lib/brenn/stores/fastmail_mail_write";
+  tool api-request {
+    allow { provider = "fastmail-write"; method = "GET";  host = "api.fastmail.com"; path = "/jmap/session"; }
+    allow { provider = "fastmail-write"; method = "POST"; host = "api.fastmail.com"; path = "/jmap/api"; }
+    rate_limit { burst = 20; sustained_per_minute = 60; }
+  }
+  config = {
+    provider = "fastmail-write",
+    host = "api.fastmail.com"
+  };
+}
+
 agent Assistant() {
   working_dir = ".";
   container = "sandbox";
@@ -111,6 +163,10 @@ agent Assistant() {
   tool fastmail-search {}
   tool fastmail-read {}
   tool fastmail-thread {}
+  tool fastmail-organize {}
+  tool fastmail-mailbox-create {}
+  tool fastmail-mailbox-update {}
+  tool fastmail-draft {}
 }
 
 new assistant: Assistant();

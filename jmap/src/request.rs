@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 
-use crate::session::{CORE, MAIL};
+use crate::session::{CORE, MAIL, SUBMISSION};
 
 /// The id a method call carries, which its response echoes (RFC 8620
 /// section 3.2), and the name of the method it calls. Assigned by
@@ -43,6 +43,15 @@ impl Request {
     pub fn mail() -> Request {
         Request {
             using: vec![CORE, MAIL],
+            calls: Vec::new(),
+        }
+    }
+
+    /// An envelope using core, mail and submission: what a call reading
+    /// sending identities needs.
+    pub fn mail_with_submission() -> Request {
+        Request {
+            using: vec![CORE, MAIL, SUBMISSION],
             calls: Vec::new(),
         }
     }
@@ -90,6 +99,19 @@ mod tests {
                 "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
                 "methodCalls": []
             })
+        );
+    }
+
+    #[test]
+    fn a_submission_envelope_names_three_capabilities() {
+        let body: Value = serde_json::from_str(&Request::mail_with_submission().to_body()).unwrap();
+        assert_eq!(
+            body["using"],
+            json!([
+                "urn:ietf:params:jmap:core",
+                "urn:ietf:params:jmap:mail",
+                "urn:ietf:params:jmap:submission"
+            ])
         );
     }
 

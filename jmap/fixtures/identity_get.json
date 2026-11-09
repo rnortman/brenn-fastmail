@@ -1,0 +1,19 @@
+{
+  "accountId": "a1",
+  "state": "s1",
+  "list": [
+    {
+      "id": "i1",
+      "name": "Alice Example",
+      "email": "alice@example.com",
+      "replyTo": null,
+      "bcc": null,
+      "textSignature": "",
+      "htmlSignature": "",
+      "mayDelete": false
+    },
+    {"id": "i2", "name": "", "email": "*@example.org", "mayDelete": true},
+    {"id": "i3", "email": "alias@example.net"}
+  ],
+  "notFound": []
+}
