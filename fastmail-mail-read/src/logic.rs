@@ -593,6 +593,8 @@ fn answer_body(state: &InFlight, outcome: Result<Value, NestedError>) -> Result<
 /// a JMAP problem object and never copied otherwise.
 fn http_failure(status: u64, body: &str) -> Failure {
     match status {
+        // TODO(restart-wording-after-key-reload): say "reload" once a Brenn
+        // release converges key files on reload, naming that version.
         401 | 403 => internal(format!(
             "{API_NAME} refused the token for this account (HTTP {status}): the operator \
              must replace its key file and restart Brenn"
