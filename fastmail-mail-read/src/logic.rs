@@ -25,16 +25,18 @@ use brenn_provider_kit::{
     cut, flag, integer, internal, no_such_step, object,
 };
 use fastmail_jmap::mail::{MAILBOX_PROPERTIES, READ_PROPERTIES, SUMMARY_PROPERTIES};
+use fastmail_jmap::session::MAIL;
 use fastmail_jmap::{
     Address, BodyPart, CallId, Email, EmailGet, EmailQuery, Filter, FilterCondition, Ids, Mailbox,
     MailboxGet, QueryResult, Request, Response, Sort, Thread, ThreadGet, result_ref,
 };
 use fastmail_provider::args::{ACCOUNT_ARG, ID_MAX_CHARS, account_arg, keyword_arg, token};
 use fastmail_provider::failure::{
-    answer_body, derived_str, derived_u64, invalid, jmap_failure, missing_derived, optional,
+    answer_body, derived_str, derived_u64, jmap_failure, missing_derived, optional, stored_args,
 };
+use fastmail_provider::results::{in_order, page, the_one};
 use fastmail_provider::settings::{API_NAME, Settings};
-use fastmail_provider::steps::{ACCOUNT_KEY, SESSION_STEP, api_step, read_session, session_call};
+use fastmail_provider::steps::{ACCOUNT_KEY, SESSION_STEP, after_session, api_step, session_call};
 use serde_json::{Value, json};
 
 use crate::spec::Provided;
@@ -61,6 +63,8 @@ const READ_ADDRESSES_MAX: usize = 50;
 const REFERENCES_MAX: usize = 20;
 /// The most attachments a read lists.
 const ATTACHMENTS_MAX: usize = 100;
+// TODO(reuse-cut-width-beside-wire-width-in-wrong-crate): these bound UTF-8
+// bytes, not the width a string serializes to.
 /// UTF-8 byte bounds on strings copied out of Fastmail's answer.
 const NAME_MAX_BYTES: usize = 1000;
 const SUBJECT_MAX_BYTES: usize = 1000;
@@ -390,20 +394,16 @@ fn step(
     settings: &Settings,
 ) -> Result<Next, Failure> {
     let body = answer_body(state, outcome, unreadable_hint(state.tool, state.step))?;
-    let parsed = parse(state.tool, &state.args).map_err(|reason| {
-        internal(format!(
-            "stored {} arguments no longer parse: {reason}",
-            state.tool.name()
-        ))
-    })?;
+    let parsed = stored_args(state, parse)?;
     if state.step == SESSION_STEP {
-        let session = read_session(&body)?;
-        let (request, _) = api_request(&parsed.tool, &session.mail_account_id);
-        let derived = Args::from_iter([(ACCOUNT_KEY.to_owned(), json!(session.mail_account_id))]);
-        return Ok(Next::Call {
-            call: api_step(settings, parsed.account.as_deref(), API_STEP, &request),
-            derived,
-        });
+        return after_session(
+            &body,
+            MAIL,
+            settings,
+            parsed.account.as_deref(),
+            API_STEP,
+            |account_id| api_request(&parsed.tool, account_id).0,
+        );
     }
     let account_id = derived_str(state, ACCOUNT_KEY)?;
     let response = Response::parse(body).map_err(jmap_failure)?;
@@ -456,47 +456,20 @@ fn search(query: &Value, get: &Value) -> Result<Next, Failure> {
     let query = QueryResult::read(query).map_err(jmap_failure)?;
     let emails = Email::get(get).map_err(jmap_failure)?.list;
     // In the query's order; an email deleted since the query is absent.
-    let messages: Vec<Value> = in_order(&query.ids, emails)
+    let messages: Vec<Value> = in_order(&query.ids, emails, email_id)
         .iter()
         .map(|email| Value::Object(summary(email)))
         .collect();
-    let mut out = Args::new();
-    out.insert("position".into(), json!(query.position));
-    if let Some(total) = query.total {
-        out.insert("total".into(), json!(total));
-    }
-    out.insert("messages".into(), Value::Array(messages));
-    let next = query.position + query.ids.len() as u64;
-    if query.total.is_some_and(|total| total > next) && !query.ids.is_empty() {
-        out.insert("next_position".into(), json!(next));
-    }
-    Ok(Next::Complete(Value::Object(out)))
+    Ok(Next::Complete(page(&query, "messages", messages)))
 }
 
-/// `emails` in the order of `ids`; an id with no email is skipped.
-fn in_order(ids: &[String], emails: Vec<Email>) -> Vec<Email> {
-    let mut by_id: BTreeMap<String, Email> = emails
-        .into_iter()
-        .map(|email| (email.id.clone(), email))
-        .collect();
-    ids.iter().filter_map(|id| by_id.remove(id)).collect()
+fn email_id(email: &Email) -> &str {
+    &email.id
 }
 
 fn read(args: &ReadArgs, get: &Value) -> Result<Next, Failure> {
     let got = Email::get(get).map_err(jmap_failure)?;
-    if got.not_found.contains(&args.id) {
-        return Err(invalid(format!("no email with id `{}`", args.id)));
-    }
-    let email = got
-        .list
-        .into_iter()
-        .find(|email| email.id == args.id)
-        .ok_or_else(|| {
-            internal(format!(
-                "{API_NAME}'s Email/get answered neither email `{}` nor its absence",
-                args.id
-            ))
-        })?;
+    let email = the_one(got, &args.id, email_id, EmailGet::METHOD, "email")?;
     let (mut out, mut omitted) = headers(&email, READ_ADDRESSES_MAX);
     for (key, list) in [
         ("cc", &email.cc),
@@ -647,19 +620,13 @@ fn thread(
     get: &Value,
 ) -> Result<Next, Failure> {
     let got = Thread::get(get).map_err(jmap_failure)?;
-    if got.not_found.contains(&args.id) {
-        return Err(invalid(format!("no thread with id `{}`", args.id)));
-    }
-    let thread = got
-        .list
-        .into_iter()
-        .find(|thread| thread.id == args.id)
-        .ok_or_else(|| {
-            internal(format!(
-                "{API_NAME}'s Thread/get answered neither thread `{}` nor its absence",
-                args.id
-            ))
-        })?;
+    let thread = the_one(
+        got,
+        &args.id,
+        |thread| &thread.id,
+        ThreadGet::METHOD,
+        "thread",
+    )?;
     let count = thread.email_ids.len();
     if count == 0 {
         return Ok(Next::Complete(thread_result(&args.id, 0, 0, Vec::new())));
@@ -698,7 +665,7 @@ fn thread_emails(
     let emails = Email::get(response.result(&get).map_err(jmap_failure)?)
         .map_err(jmap_failure)?
         .list;
-    let found = in_order(&ids, emails);
+    let found = in_order(&ids, emails, email_id);
     let gone = (ids.len() - found.len()) as u64;
     let messages = found
         .iter()
@@ -796,35 +763,18 @@ mod tests {
     use brenn_provider_kit::testutil::{Answered, MemoryHost, failure, http, nested, truncated};
     use brenn_provider_kit::{ApiCall, ErrorKind, Query};
     use brenn_provider_kit::{
-        Bound, CALL_BUDGET, Delivered, Input, Probes, Request as Incoming, ToolBounds, Unreadable,
-        check, hold_probes, hold_required, input_schema, probes,
+        Bound, CALL_BUDGET, Delivered, Input, Probes, ToolBounds, Unreadable, check, hold_probes,
+        hold_required, input_schema, probes,
     };
-    use fastmail_jmap::session::{API_PATH, CORE, MAIL, SESSION_PATH};
-    use fastmail_provider::failure::{CALLER_ERRORS, LIMIT_ERROR};
-    use fastmail_provider::steps::api_call;
+    use fastmail_jmap::session::CORE;
+    use fastmail_provider::failure::{CALLER_ERRORS, LIMIT_ERROR, SESSION_SETUP};
     use fastmail_provider::testutil::{
-        ACCOUNT_PATTERN, KEYWORD_PATTERN, account_probes, completed, jmap, keyword_probes,
-        session_body, settings,
+        ACCOUNT_PATTERN, KEYWORD_PATTERN, account_probes, completed, incoming, jmap,
+        keyword_probes, row, session_body, settings,
     };
     use serde_json::Map;
 
     use super::*;
-
-    /// The row of `tool` with `args` at `step`, carrying `derived`.
-    fn row(tool: Provided, args: Value, step: u8, derived: Value) -> InFlight {
-        let (method, path) = match step {
-            SESSION_STEP => ("GET", SESSION_PATH),
-            _ => ("POST", API_PATH),
-        };
-        let call = Call {
-            step,
-            api: api_call(&settings(), None, method, path, None),
-        };
-        let Value::Object(derived) = derived else {
-            panic!("derived is an object");
-        };
-        InFlight::new(&"r".repeat(32), tool, &args, &call, derived, 1_000, 1_000)
-    }
 
     fn at_api(tool: Provided, args: Value) -> InFlight {
         row(tool, args, API_STEP, json!({ ACCOUNT_KEY: "a1" }))
@@ -1119,11 +1069,12 @@ mod tests {
             panic!("fails");
         };
         assert_eq!(failed.kind, ErrorKind::Internal);
-        assert!(
-            failed
-                .detail
-                .starts_with("the Fastmail account cannot be read as mail: "),
-            "{failed:?}"
+        assert_eq!(
+            failed.detail,
+            format!(
+                "the Fastmail token for this account cannot be used here: JMAP session: the \
+                 account does not advertise urn:ietf:params:jmap:mail; {SESSION_SETUP}"
+            )
         );
         for status in [401, 403] {
             assert_eq!(
@@ -1760,14 +1711,6 @@ mod tests {
                 summary_of("e3", "2026-11-08T09:00:00Z"),
             ] })
         );
-    }
-
-    fn incoming(id: &str, tool: &str, args: Value) -> Incoming {
-        Incoming {
-            id: id.to_owned(),
-            tool: tool.to_owned(),
-            args,
-        }
     }
 
     #[test]

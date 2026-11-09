@@ -1,0 +1,22 @@
+{
+  "accountId": "a1",
+  "state": "s1",
+  "list": [
+    {
+      "id": "b1",
+      "name": "Personal",
+      "description": "Friends and family",
+      "sortOrder": 2,
+      "isDefault": true,
+      "isSubscribed": true
+    },
+    {
+      "id": "b2",
+      "name": "Shared",
+      "description": null,
+      "isDefault": false,
+      "isSubscribed": false
+    }
+  ],
+  "notFound": []
+}

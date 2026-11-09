@@ -1,0 +1,62 @@
+/// Each user's Fastmail contacts read for an assistant over JMAP (RFC 8620,
+/// RFC 9610 for contacts, RFC 9553 for the cards), as native tools, each
+/// answered by `api-request` calls against the `api_key_provider` the instance
+/// names. That provider holds one account per user, or several, each a user's
+/// API token with access to contacts; `api-request` picks the calling user's,
+/// and attaches it host-side, so no token ever reaches this component. Every
+/// tool reads; nothing here writes to the account.
+///
+/// Every capability is load-bearing: `config` names the provider and the
+/// host, without which no call can be addressed; `store` carries each
+/// request's state between the activation that issues its nested call and
+/// the one that receives the answer; `tools` is the authority to call
+/// `api-request`; `provides` is what makes the tools exist; `log` records each
+/// step's tool, status and size — never a body or a header.
+///
+/// The instance's `config = { ... };` map is flat: `provider` is the
+/// `api_key_provider` name, whose `account` blocks bind each user's token; `host` is the `host[:port]` Fastmail's JMAP API
+/// is called on (`api.fastmail.com`), which `api-request` matches against that
+/// provider's `api_hosts` and the instance's clauses must admit, for `GET
+/// /jmap/session` and `POST /jmap/api`. A missing or malformed key fails every
+/// activation, naming the key.
+///
+/// Size the instance's result inbox with a `channel at
+/// "brenn:tool-results/<slug>"` block: each live request has at most one
+/// nested call outstanding, so the window must hold Σ max_concurrency results,
+/// twice over for a re-delivered result — `retain_depth ≥ 2 × Σ`, rounded up
+/// to a power of two. This class's Σ is 10, so 32 holds it; the family default
+/// of 16 does not.
+///
+/// Every nested answer crosses the bus as a tool result, so Fastmail's body —
+/// a JSON string inside `api-request`'s value, inside the result envelope —
+/// must fit `[messaging] max_body_bytes` (64 KiB default). Either raise that
+/// cap to carry the key provider's `max_response_bytes` (256 KiB default) with
+/// a margin for escaping, `messaging { max_body_bytes = 393216; }`, or lower
+/// `max_response_bytes` to fit the default cap. A card, or a search at the
+/// default `limit` of 10, fits the default cap; a full page of 25, or a card
+/// with long notes, needs the raised cap. An answer over the bus cap never
+/// reaches this component as Fastmail's answer.
+component FastmailContacts {
+  abi = processor;
+  requires = [log, store, config, tools, provides];
+  in tool-results;
+  in tool-requests;
+  provide fastmail-address-books {
+    mcp_name = "FastmailAddressBooks";
+    description = "List the address books of the user's Fastmail contacts. `account` names which of the user's Fastmail accounts, by the name the operator gave it — not the `account_id` `FastmailAddressBooks` answers, which is Fastmail's own id; omit it for the user's default or only account. A refusal listing account names means several are configured and none is the default: pass one. Answers `account_id` and `address_books`, in Fastmail's display order, each with its `id`, `name`, `description` (when it has one), `is_default` and `is_subscribed`. `FastmailContactSearch` takes an `id` as `address_book`, and contacts list theirs as `address_book_ids`. Nothing is written. A refusal saying Fastmail refused the token (HTTP 401 or 403) is the operator's to fix: the account's key file.";
+    input_schema = """{ "type": "object", "properties": { "account": { "type": "string", "pattern": "^[a-z]([a-z0-9-]{0,253}[a-z0-9])?$" } }, "additionalProperties": false }""";
+    max_concurrency = 2;
+  }
+  provide fastmail-contact-search {
+    mcp_name = "FastmailContactSearch";
+    description = "Search the user's Fastmail contacts, by surname then given name. `account` names which of the user's Fastmail accounts, by the name the operator gave it — not the `account_id` `FastmailAddressBooks` answers, which is Fastmail's own id; omit it for the user's default or only account. A refusal listing account names means several are configured and none is the default: pass one. Every other argument is optional and the given ones must all match; with none, every contact is listed: `text` (anywhere in the contact), `name`, `email`, `phone`, `organization` (each free text, at most 1024 characters), `address_book` (an address book `id` from `FastmailAddressBooks`), `uid` (a contact's exact `uid`, at most 1024 characters: a group's `members` from `FastmailContactRead` are uids), `kind` (`individual`, `group`, `org`, `location`, `device` or `application`). `limit` (1-25, default 10) caps the contacts and `position` (0-10000, default 0) skips that many. Answers `position`, `total` (how many match), `contacts` and, when more match, `next_position` to pass back as `position`. Each contact has its `id` (for `FastmailContactRead`), `kind`, `name` (when it has one), `email` and `phone` (its preferred ones, `emails_omitted` and `phones_omitted` counting the others), `organization` (the name of one of its organizations, picked arbitrarily when it has several; `organizations_omitted` counts the others) and `address_book_ids` (at most 10, `address_book_ids_omitted` counting the rest; resolve with `FastmailAddressBooks`). A refusal naming `max_response_bytes` or `max_body_bytes` means the answer was too large: ask for fewer with `limit`. A refusal saying Fastmail refused the token (HTTP 401 or 403) is the operator's to fix: the account's key file. Nothing is written.";
+    input_schema = """{ "type": "object", "properties": { "text": { "type": "string", "minLength": 1, "maxLength": 1024, "pattern": "[^\\s\\u0085]" }, "name": { "type": "string", "minLength": 1, "maxLength": 1024, "pattern": "[^\\s\\u0085]" }, "email": { "type": "string", "minLength": 1, "maxLength": 1024, "pattern": "[^\\s\\u0085]" }, "phone": { "type": "string", "minLength": 1, "maxLength": 1024, "pattern": "[^\\s\\u0085]" }, "organization": { "type": "string", "minLength": 1, "maxLength": 1024, "pattern": "[^\\s\\u0085]" }, "address_book": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,255}$" }, "uid": { "type": "string", "minLength": 1, "maxLength": 1024, "pattern": "[^\\s\\u0085]" }, "kind": { "type": "string", "enum": ["individual", "group", "org", "location", "device", "application"] }, "limit": { "type": "integer", "minimum": 1, "maximum": 25 }, "position": { "type": "integer", "minimum": 0, "maximum": 10000 }, "account": { "type": "string", "pattern": "^[a-z]([a-z0-9-]{0,253}[a-z0-9])?$" } }, "additionalProperties": false }""";
+    max_concurrency = 4;
+  }
+  provide fastmail-contact-read {
+    mcp_name = "FastmailContactRead";
+    description = "Read one contact of the user's Fastmail contacts. `account` names which of the user's Fastmail accounts, by the name the operator gave it — not the `account_id` `FastmailAddressBooks` answers, which is Fastmail's own id; omit it for the user's default or only account. A refusal listing account names means several are configured and none is the default: pass one. `id` is a contact `id` from `FastmailContactSearch`. Answers, each key only when the contact has it: `id`, `uid`, `kind`, `created`, `updated`, `name` and `name_components` (`kind` and `value` each, at most 20), `nicknames` (at most 10), `organizations` (`name` and `units`, at most 10, 5 units each), `titles` (`name`, `kind` and the `organization` it is held at, at most 10), `emails` (`address`, `contexts`, `label`, `pref`, preferred first, at most 20), `phones` (`number`, `features`, `contexts`, `label`, `pref`, preferred first, at most 20), `online_services` (`service`, `user`, `uri`, `contexts`, `label`, `pref`, at most 10), `addresses` (`text`, `country_code`, `contexts`, `pref`, at most 10), `anniversaries` (`kind` and `date`: 1953-04-15, 1953-04, 1953, --04-15 for a month and day, or a UTC timestamp; at most 10), `notes` (`note`, `created`, and `truncated` when the note was cut at 4000 bytes; at most 10), `members` (a group's member uids, at most 100, a uid longer than 255 bytes left out and counted; find each with `FastmailContactSearch`'s `uid`) and `address_book_ids` (at most 20; resolve with `FastmailAddressBooks`). A list with entries left out carries `<list>_omitted` counting them, and a long string is cut, ending in `…`. An `id` Fastmail does not know is refused. A refusal naming `max_response_bytes` or `max_body_bytes` means the contact is too large to read: the operator raises that setting. A refusal saying Fastmail refused the token (HTTP 401 or 403) is the operator's to fix: the account's key file. Nothing is written.";
+    input_schema = """{ "type": "object", "properties": { "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,255}$" }, "account": { "type": "string", "pattern": "^[a-z]([a-z0-9-]{0,253}[a-z0-9])?$" } }, "required": ["id"], "additionalProperties": false }""";
+    max_concurrency = 4;
+  }
+}

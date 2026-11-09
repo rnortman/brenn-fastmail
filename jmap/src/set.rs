@@ -7,7 +7,7 @@ use std::fmt;
 use serde_json::{Map, Value};
 
 use crate::error::{Error, OneLine};
-use crate::mail::Fields;
+use crate::method::Fields;
 
 /// A `SetError` (RFC 8620 section 5.3): why one object was not created or
 /// updated.

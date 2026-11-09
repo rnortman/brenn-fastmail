@@ -41,9 +41,17 @@ buildifier_test(
     workspace = "//:MODULE.bazel",
 )
 
-# The release: two backend packages, `fastmail-mail-read` and
-# `fastmail-mail-write`, each built from its component artifact and its
-# authored specification.
+# The release: three backend packages, `fastmail-contacts`,
+# `fastmail-mail-read` and `fastmail-mail-write`, each built from its component
+# artifact and its authored specification.
+component_package(
+    name = "fastmail-contacts_package",
+    component = "//fastmail-contacts:component",
+    package = "fastmail-contacts",
+    spec = "//spec:fastmail-contacts.brenn",
+    world = "brenn:processor",
+)
+
 component_package(
     name = "fastmail-mail-read_package",
     component = "//fastmail-mail-read:component",
@@ -63,6 +71,12 @@ component_package(
 # The capabilities each artifact imports against the ones its specification
 # declares.
 grant_parity_test(
+    name = "fastmail-contacts_grant_parity",
+    component = "//fastmail-contacts:component",
+    spec = "//spec:fastmail-contacts.brenn",
+)
+
+grant_parity_test(
     name = "fastmail-mail-read_grant_parity",
     component = "//fastmail-mail-read:component",
     spec = "//spec:fastmail-mail-read.brenn",
@@ -78,6 +92,7 @@ deployed_components_test(
     name = "deployed_components_test",
     manifest = "deployed-components.txt",
     packages = [
+        ":fastmail-contacts_package",
         ":fastmail-mail-read_package",
         ":fastmail-mail-write_package",
     ],
@@ -89,6 +104,7 @@ component_bundle(
     name = "bundle",
     manifest = "deployed-components.txt",
     packages = [
+        ":fastmail-contacts_package",
         ":fastmail-mail-read_package",
         ":fastmail-mail-write_package",
     ],

@@ -32,6 +32,11 @@ pub const CALLER_ERRORS: &[&str] = &[
 pub const READ_ONLY_TOKEN: &str = "the token for this account cannot write mail: the operator \
      must replace its key file with a token that has read-write access to mail and restart Brenn";
 
+/// Where the operator looks when the token's session lacks a capability or
+/// a primary account the tool needs.
+pub const SESSION_SETUP: &str = "the operator checks the token's session as the README's \
+     Fastmail setup step 3 describes";
+
 /// Why Fastmail refuses one object `forbidden`, in the caller's terms.
 pub const FORBIDDEN_CHANGE: &str = "the account's permissions do not allow this change to it";
 
@@ -147,7 +152,7 @@ pub fn http_failure(status: u64, body: &str) -> Failure {
 pub fn jmap_failure(error: JmapError) -> Failure {
     match &error {
         JmapError::Session(_) => internal(format!(
-            "the {API_NAME} account cannot be read as mail: {error}"
+            "the {API_NAME} token for this account cannot be used here: {error}; {SESSION_SETUP}"
         )),
         JmapError::Method { kind, .. } if CALLER_ERRORS.contains(&kind.as_str()) => {
             invalid(format!("{API_NAME}: {error}"))
@@ -235,6 +240,20 @@ pub fn invalid(detail: String) -> Failure {
     }
 }
 
+/// The request's arguments as `parse` reads them; arguments a row stored
+/// that no longer parse are the request's internal failure.
+pub fn stored_args<T: Tool, P>(
+    state: &InFlight<T>,
+    parse: fn(T, &Value) -> Result<P, String>,
+) -> Result<P, Failure> {
+    parse(state.tool, &state.args).map_err(|reason| {
+        internal(format!(
+            "stored {} arguments no longer parse: {reason}",
+            state.tool.name()
+        ))
+    })
+}
+
 /// The string `state` carries in `derived` at `key`.
 pub fn derived_str<'a, T: Tool>(state: &'a InFlight<T>, key: &str) -> Result<&'a str, Failure> {
     state
@@ -271,12 +290,11 @@ pub fn optional(out: &mut Args, key: &str, value: &Option<String>, max_bytes: us
 
 #[cfg(test)]
 mod tests {
-    use brenn_provider_kit::Call;
     use brenn_provider_kit::testutil::{failure, http, nested};
 
     use super::*;
-    use crate::steps::{SESSION_STEP, api_call};
-    use crate::testutil::settings;
+    use crate::steps::SESSION_STEP;
+    use crate::testutil;
 
     #[derive(Clone, Copy, Debug, PartialEq)]
     struct Probe;
@@ -292,22 +310,7 @@ mod tests {
     }
 
     fn row(derived: Value) -> InFlight<Probe> {
-        let call = Call {
-            step: SESSION_STEP,
-            api: api_call(&settings(), None, "GET", "/jmap/session", None),
-        };
-        let Value::Object(derived) = derived else {
-            panic!("derived is an object");
-        };
-        InFlight::new(
-            &"r".repeat(32),
-            Probe,
-            &json!({}),
-            &call,
-            derived,
-            1_000,
-            1_000,
-        )
+        testutil::row(Probe, json!({}), SESSION_STEP, derived)
     }
 
     fn method(kind: &str) -> JmapError {
@@ -396,7 +399,10 @@ mod tests {
         assert_eq!(jmap_failure(method("serverFail")).kind, ErrorKind::Internal);
         assert_eq!(
             jmap_failure(JmapError::Session("x".to_owned())).detail,
-            "the Fastmail account cannot be read as mail: JMAP session: x"
+            format!(
+                "the Fastmail token for this account cannot be used here: JMAP session: x; \
+                 {SESSION_SETUP}"
+            )
         );
         for kind in ["accountReadOnly", "forbidden"] {
             assert_eq!(

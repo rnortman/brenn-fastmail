@@ -30,16 +30,17 @@ use brenn_provider_kit::{
     Args, COMPACT_RESULT_CEILING, Call, Failure, Logic, NestedError, Next, Tool, bounded, capped,
     cut, flag, internal, no_such_step, object, serialized_len,
 };
+use fastmail_jmap::session::MAIL;
 use fastmail_jmap::{
     CallId, EmailSet, MailboxCreate, MailboxSet, Patch, Request, Response, SetError,
 };
 use fastmail_provider::args::{ACCOUNT_ARG, account_arg, id_list, is_keyword, keyword_rule, token};
 use fastmail_provider::failure::{
     MAILBOX_MEMBERSHIP_HINT, StepFailure, concerns_mailbox_membership, derived_str, jmap_failure,
-    set_failure, step_answer, write_method_failure,
+    set_failure, step_answer, stored_args, write_method_failure,
 };
 use fastmail_provider::settings::{API_NAME, Settings};
-use fastmail_provider::steps::{ACCOUNT_KEY, SESSION_STEP, api_step, read_session, session_call};
+use fastmail_provider::steps::{ACCOUNT_KEY, SESSION_STEP, after_session, session_call};
 use serde_json::{Map, Value, json};
 
 use crate::spec::Provided;
@@ -448,25 +449,21 @@ fn step(
     settings: &Settings,
 ) -> Result<Next, StepFailure> {
     let body = step_answer(state, outcome, None)?;
-    let parsed = parse(state.tool, &state.args).map_err(|reason| {
-        internal(format!(
-            "stored {} arguments no longer parse: {reason}",
-            state.tool.name()
-        ))
-    })?;
+    let parsed = stored_args(state, parse)?;
     let account = parsed.account.as_deref();
     let args = match &parsed.tool {
         ToolArgs::Draft(args) => return draft::step(state, body, settings, account, args),
         ToolArgs::Set(args) => args,
     };
     if state.step == SESSION_STEP {
-        let session = read_session(&body)?;
-        let (request, _) = api_request(args, &session.mail_account_id);
-        let derived = Args::from_iter([(ACCOUNT_KEY.to_owned(), json!(session.mail_account_id))]);
-        return Ok(Next::Call {
-            call: api_step(settings, account, API_STEP, &request),
-            derived,
-        });
+        return Ok(after_session(
+            &body,
+            MAIL,
+            settings,
+            account,
+            API_STEP,
+            |account_id| api_request(args, account_id).0,
+        )?);
     }
     let account_id = derived_str(state, ACCOUNT_KEY)?;
     let response = Response::parse(body).map_err(jmap_failure)?;
@@ -573,17 +570,15 @@ mod tests {
     use brenn_provider_kit::activation::BACKLOG_NS;
     use brenn_provider_kit::testutil::{Answered, MemoryHost, failure, http, nested, truncated};
     use brenn_provider_kit::{
-        ApiCall, Bound, CALL_BUDGET, Delivered, ErrorKind, Input, Probes, Query,
-        Request as Incoming, ToolBounds, Unreadable, check, hold_probes, hold_required,
-        input_schema, probes,
+        ApiCall, Bound, CALL_BUDGET, Delivered, ErrorKind, Input, Probes, Query, ToolBounds,
+        Unreadable, check, hold_probes, hold_required, input_schema, probes,
     };
-    use fastmail_jmap::session::{API_PATH, CORE, MAIL, SESSION_PATH};
+    use fastmail_jmap::session::CORE;
     use fastmail_provider::args::{ID_MAX_CHARS, KEYWORD_MAX_CHARS};
     use fastmail_provider::failure::{FORBIDDEN_CHANGE, READ_ONLY_TOKEN};
-    use fastmail_provider::steps::api_call;
     use fastmail_provider::testutil::{
-        ACCOUNT_PATTERN, HOST_ARGS_CAP_BYTES, KEYWORD_PATTERN, account_probes, completed, jmap,
-        session_body, settings,
+        ACCOUNT_PATTERN, HOST_ARGS_CAP_BYTES, KEYWORD_PATTERN, account_probes, completed, incoming,
+        jmap, row, session_body, settings,
     };
 
     use super::*;
@@ -610,22 +605,6 @@ mod tests {
     /// What `from` admits: the bare-address alternative of
     /// `RECIPIENT_PATTERN`, held to the byte bound by [`from_probes`].
     const ADDRESS_PATTERN: &str = concat!("^", address!(), "$");
-
-    /// The row of `tool` with `args` at `step`, carrying `derived`.
-    pub(super) fn row(tool: Provided, args: Value, step: u8, derived: Value) -> InFlight {
-        let (method, path) = match step {
-            SESSION_STEP => ("GET", SESSION_PATH),
-            _ => ("POST", API_PATH),
-        };
-        let call = Call {
-            step,
-            api: api_call(&settings(), None, method, path, None),
-        };
-        let Value::Object(derived) = derived else {
-            panic!("derived is an object");
-        };
-        InFlight::new(&"r".repeat(32), tool, &args, &call, derived, 1_000, 1_000)
-    }
 
     pub(super) fn at_api(tool: Provided, args: Value) -> InFlight {
         row(tool, args, API_STEP, json!({ ACCOUNT_KEY: "a1" }))
@@ -1695,14 +1674,6 @@ mod tests {
                 answered(&state, jmap(json!([]))),
                 Next::Fail(no_such_step(tool, step))
             );
-        }
-    }
-
-    pub(super) fn incoming(id: &str, tool: &str, args: Value) -> Incoming {
-        Incoming {
-            id: id.to_owned(),
-            tool: tool.to_owned(),
-            args,
         }
     }
 

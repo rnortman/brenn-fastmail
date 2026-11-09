@@ -9,11 +9,14 @@
 //!   width a string has on the wire.
 //! - [`steps`]: the session step and the JMAP API call.
 //! - [`failure`]: Fastmail's answer as the request's body or failure.
-//! - `testutil` (behind the `testutils` feature): fixtures and argument
-//!   probes for a component's host tests.
+//! - [`results`]: a `/query` and `/get` pair read into a page, and the one
+//!   object a get by id names.
+//! - `testutil` (behind the `testutils` feature): fixtures, argument probes
+//!   and in-flight rows for a component's host tests.
 
 pub mod args;
 pub mod failure;
+pub mod results;
 pub mod settings;
 pub mod steps;
 #[cfg(feature = "testutils")]

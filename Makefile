@@ -65,7 +65,7 @@ check:
 	$(CHANGES) query
 	$(CHANGES) todo query
 	bazel test --config=lint //...
-	bazel build --config=lint --platforms=@brenn//bazel/platforms:wasm32 //fastmail-mail-read:fastmail-mail-read //fastmail-mail-write:fastmail-mail-write //jmap:fastmail_jmap //provider:fastmail_provider
+	bazel build --config=lint --platforms=@brenn//bazel/platforms:wasm32 //fastmail-contacts:fastmail-contacts //fastmail-mail-read:fastmail-mail-read //fastmail-mail-write:fastmail-mail-write //jmap:fastmail_jmap //provider:fastmail_provider
 	$(SCRUB) tree
 
 .PHONY: build

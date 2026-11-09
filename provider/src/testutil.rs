@@ -1,13 +1,15 @@
 //! Fixtures for a Fastmail component's host tests: its settings, a session,
-//! a JMAP answer, the patterns its shared arguments are stated by and the
-//! probes that hold the parsers to them.
+//! a JMAP answer, a request's in-flight row and a pending call, the patterns
+//! its shared arguments are stated by and the probes that hold the parsers
+//! to them.
 
 use brenn_provider_kit::testutil::http;
-use brenn_provider_kit::{NestedError, Next, Probes};
-use fastmail_jmap::session::{CORE, MAIL, SUBMISSION};
-use serde_json::{Value, json};
+use brenn_provider_kit::{Call, InFlight, NestedError, Next, Probes, Request, Tool};
+use fastmail_jmap::session::{API_PATH, CORE, MAIL, SESSION_PATH, SUBMISSION};
+use serde_json::{Map, Value, json};
 
 use crate::settings::Settings;
+use crate::steps::{SESSION_STEP, api_call};
 
 /// The most bytes a tool call's arguments may serialise to before the host
 /// refuses the call. A copy of the host's `PROCESSOR_MAX_TOOL_ARGS_BYTES`,
@@ -32,15 +34,55 @@ pub fn settings() -> Settings {
     .expect("the fixture's settings read")
 }
 
-/// A session answer advertising mail and submission, both on account `a1`.
-pub fn session_body() -> Result<Value, NestedError> {
+/// A session answer advertising core and `capabilities`, each with primary
+/// account `a1`.
+pub fn session_with(capabilities: &[&str]) -> Result<Value, NestedError> {
+    let advertised: Map<String, Value> = std::iter::once(CORE)
+        .chain(capabilities.iter().copied())
+        .map(|capability| (capability.to_owned(), json!({})))
+        .collect();
+    let primary: Map<String, Value> = std::iter::once(CORE)
+        .chain(capabilities.iter().copied())
+        .map(|capability| (capability.to_owned(), json!("a1")))
+        .collect();
     let session = json!({
-        "capabilities": { CORE: {}, MAIL: {}, SUBMISSION: {} },
+        "capabilities": advertised,
         "accounts": { "a1": { "name": "alice@example.com" } },
-        "primaryAccounts": { MAIL: "a1", SUBMISSION: "a1" },
+        "primaryAccounts": primary,
         "apiUrl": "https://api.fastmail.example.com/jmap/api/",
     });
     http(200, &session.to_string())
+}
+
+/// A session answer advertising mail and submission, both on account `a1`.
+pub fn session_body() -> Result<Value, NestedError> {
+    session_with(&[MAIL, SUBMISSION])
+}
+
+/// The in-flight row of `tool` with `args` at `step`, carrying `derived`:
+/// the session step's call at [`SESSION_STEP`], an API call at any other.
+pub fn row<T: Tool>(tool: T, args: Value, step: u8, derived: Value) -> InFlight<T> {
+    let (method, path) = match step {
+        SESSION_STEP => ("GET", SESSION_PATH),
+        _ => ("POST", API_PATH),
+    };
+    let call = Call {
+        step,
+        api: api_call(&settings(), None, method, path, None),
+    };
+    let Value::Object(derived) = derived else {
+        panic!("derived is an object");
+    };
+    InFlight::new(&"r".repeat(32), tool, &args, &call, derived, 1_000, 1_000)
+}
+
+/// A pending provided call `id` of the tool named `tool`.
+pub fn incoming(id: &str, tool: &str, args: Value) -> Request {
+    Request {
+        id: id.to_owned(),
+        tool: tool.to_owned(),
+        args,
+    }
 }
 
 /// A JMAP answer carrying `responses` as its `methodResponses`.

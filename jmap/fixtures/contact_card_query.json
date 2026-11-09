@@ -1,0 +1,8 @@
+{
+  "accountId": "a1",
+  "queryState": "q1",
+  "canCalculateChanges": false,
+  "position": 0,
+  "ids": ["c1", "c2", "c3"],
+  "total": 3
+}

@@ -1,8 +1,9 @@
-// The document a deployer copies from: two Fastmail key providers, one
-// holding read-only tokens and one holding read-write tokens; the
-// `fastmail-mail-read` and `fastmail-mail-write` instances, each with the two
-// clauses it calls through on its own provider; and an agent granted the eight
-// tools.
+// The document a deployer copies from: three Fastmail key providers, one
+// holding read-only mail tokens, one holding read-write mail tokens and one
+// holding read-only contacts tokens; the `fastmail-mail-read`,
+// `fastmail-mail-write` and `fastmail-contacts` instances, each with the two
+// clauses it calls through on its own provider; and an agent granted the
+// eleven tools.
 //
 // `example_fit` compiles it against the two module roots a host resolves it
 // from, this bundle's and brenn's; `config_check` lowers it with the verb an
@@ -10,6 +11,7 @@
 // below are a deployment's shape, not files this checkout holds.
 use @fastmail-mail-read::*;
 use @fastmail-mail-write::*;
+use @fastmail-contacts::*;
 
 server {
   bind_address = "127.0.0.1:3000";
@@ -102,6 +104,28 @@ api_key_provider fastmail-write {
   }
 }
 
+/// The contacts component's tokens: the same accounts under the same names
+/// and with the same `default`, each key file holding a Fastmail API token
+/// with read-only access to contacts, so nothing the contacts instance does
+/// can change the account.
+api_key_provider fastmail-contacts {
+  header = "Authorization";
+  api_hosts = ["https://api.fastmail.com"];
+  account alice {
+    user = "alice";
+    key_file = "/etc/brenn/fastmail-contacts/alice";
+    default = true;
+  }
+  account alice-work {
+    user = "alice";
+    key_file = "/etc/brenn/fastmail-contacts/alice-work";
+  }
+  account bob {
+    user = "bob";
+    key_file = "/etc/brenn/fastmail-contacts/bob";
+  }
+}
+
 // Each live request has one nested call outstanding: the class's summed
 // `max_concurrency` (12) results can arrive between two activations, twice
 // over if one is re-delivered, so `retain_depth` is at least 24, rounded up.
@@ -155,6 +179,31 @@ new fastmail_mail_write: FastmailMailWrite {
   };
 }
 
+// The contacts class's summed `max_concurrency` is 10, so 2 × 10 = 20 rounds
+// up to 32; the family default of 16 does not hold it.
+channel at "brenn:tool-results/fastmail_contacts" {
+  push_depth = 1;
+  retain_depth = 32;
+  standing_retain_depth = 32;
+  noise = alarm;
+}
+
+/// Every tool reads the session document, then posts one JMAP envelope. The
+/// instance calls through the contacts provider and writes nothing.
+new fastmail_contacts: FastmailContacts {
+  grants = [log, store, config, tools, provides];
+  store_path = "/var/lib/brenn/stores/fastmail_contacts";
+  tool api-request {
+    allow { provider = "fastmail-contacts"; method = "GET";  host = "api.fastmail.com"; path = "/jmap/session"; }
+    allow { provider = "fastmail-contacts"; method = "POST"; host = "api.fastmail.com"; path = "/jmap/api"; }
+    rate_limit { burst = 20; sustained_per_minute = 60; }
+  }
+  config = {
+    provider = "fastmail-contacts",
+    host = "api.fastmail.com"
+  };
+}
+
 agent Assistant() {
   working_dir = ".";
   container = "sandbox";
@@ -167,6 +216,9 @@ agent Assistant() {
   tool fastmail-mailbox-create {}
   tool fastmail-mailbox-update {}
   tool fastmail-draft {}
+  tool fastmail-address-books {}
+  tool fastmail-contact-search {}
+  tool fastmail-contact-read {}
 }
 
 new assistant: Assistant();

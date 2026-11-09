@@ -10,8 +10,8 @@ deployer's runbook; read it first. `docs/developing.md` is the developer's
 guide: building, the gate, the layout.
 
 `jmap/` is the transport-free JMAP crate: request building and response
-reading, no HTTP, no credential. `fastmail-mail-read/` and
-`fastmail-mail-write/` are the providers, `provider/` the plumbing they share,
+reading, no HTTP, no credential. `fastmail-mail-read/`,
+`fastmail-mail-write/` and `fastmail-contacts/` are the providers, `provider/` the plumbing they share,
 their specifications in `spec/`.
 `config/example.brenn` is the deployer's document the README quotes;
 `//:example_fit` compiles it and `//:config_check` lowers it, holding its

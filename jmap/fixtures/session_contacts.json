@@ -1,0 +1,38 @@
+{
+  "capabilities": {
+    "urn:ietf:params:jmap:core": {
+      "maxSizeUpload": 50000000,
+      "maxConcurrentUpload": 4,
+      "maxSizeRequest": 10000000,
+      "maxConcurrentRequests": 4,
+      "maxCallsInRequest": 16,
+      "maxObjectsInGet": 4096,
+      "maxObjectsInSet": 4096,
+      "collationAlgorithms": ["i;ascii-numeric", "i;ascii-casemap", "i;octet"]
+    },
+    "urn:ietf:params:jmap:contacts": {}
+  },
+  "accounts": {
+    "a1": {
+      "name": "alice@example.com",
+      "isPersonal": true,
+      "isReadOnly": true,
+      "accountCapabilities": {
+        "urn:ietf:params:jmap:contacts": {
+          "maxAddressBooksPerCard": null,
+          "mayCreateAddressBook": false
+        }
+      }
+    }
+  },
+  "primaryAccounts": {
+    "urn:ietf:params:jmap:core": "a1",
+    "urn:ietf:params:jmap:contacts": "a1"
+  },
+  "username": "alice@example.com",
+  "apiUrl": "https://api.example.com/jmap/api/",
+  "downloadUrl": "https://www.example.com/jmap/download/{accountId}/{blobId}/{name}?type={type}",
+  "uploadUrl": "https://api.example.com/jmap/upload/{accountId}/",
+  "eventSourceUrl": "https://api.example.com/jmap/event/",
+  "state": "s1"
+}

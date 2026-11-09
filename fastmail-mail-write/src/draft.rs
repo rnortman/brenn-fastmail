@@ -11,15 +11,17 @@
 
 use brenn_provider_kit::{Args, Failure, Next, capped, cut, internal};
 use fastmail_jmap::mail::DRAFT_LOOKUP_PROPERTIES;
+use fastmail_jmap::session::{MAIL, SUBMISSION};
 use fastmail_jmap::{
     Address, CallId, Email, EmailCreate, EmailGet, EmailSet, Error as JmapError, Identity,
     IdentityGet, Ids, MailboxQuery, QueryResult, Request, Response,
 };
 use fastmail_provider::args::{ACCOUNT_ARG, is_token, token, wire_safe, wire_width};
 use fastmail_provider::failure::{
-    StepFailure, derived_str, invalid, jmap_failure, missing_derived, set_failure,
+    SESSION_SETUP, StepFailure, derived_str, invalid, jmap_failure, missing_derived, set_failure,
     write_method_failure,
 };
+use fastmail_provider::results::the_one;
 use fastmail_provider::settings::{API_NAME, Settings};
 use fastmail_provider::steps::{ACCOUNT_KEY, SESSION_STEP, api_step, read_session};
 use serde_json::{Map, Value, json};
@@ -79,10 +81,6 @@ const SUBJECT_KEY: &str = "subject";
 const IN_REPLY_TO_KEY: &str = "in_reply_to";
 const REFERENCES_KEY: &str = "references";
 const THREAD_KEY: &str = "thread_id";
-
-/// Where the operator looks when the account cannot name a sending identity.
-const SUBMISSION_SETUP: &str = "the operator checks the token's session as the README's Fastmail \
-     setup step 3 describes";
 
 /// `FastmailDraft`'s arguments, validated.
 #[derive(Clone, Debug, PartialEq)]
@@ -413,17 +411,20 @@ pub(super) fn step(
     match state.step {
         SESSION_STEP => {
             let session = read_session(&body)?;
-            let Some(submission_id) = session.submission_account_id else {
+            let mail_id = session.primary_account(MAIL).map_err(jmap_failure)?;
+            // TODO(submission-capability-read-write-token): unconfirmed that a
+            // read-write token's session advertises submission.
+            let Ok(submission_id) = session.primary_account(SUBMISSION) else {
                 return Err(internal(format!(
                     "this account's session does not advertise \
                      `urn:ietf:params:jmap:submission` with a primary account, so no sending \
-                     identity can be read for the draft's From; {SUBMISSION_SETUP}"
+                     identity can be read for the draft's From; {SESSION_SETUP}"
                 ))
                 .into());
             };
-            let (request, _) = lookup_request(args, &session.mail_account_id, &submission_id);
+            let (request, _) = lookup_request(args, mail_id, submission_id);
             let derived = Args::from_iter([
-                (ACCOUNT_KEY.to_owned(), json!(session.mail_account_id)),
+                (ACCOUNT_KEY.to_owned(), json!(mail_id)),
                 (SUBMISSION_KEY.to_owned(), json!(submission_id)),
             ]);
             Ok(Next::Call {
@@ -514,7 +515,7 @@ fn identity_failure(error: JmapError) -> Failure {
         JmapError::Method { kind, .. } if IDENTITY_ACCESS_ERRORS.contains(&kind.as_str()) => {
             internal(format!(
                 "{API_NAME}: {error}; no sending identity can be read for the draft's \
-                 From; {SUBMISSION_SETUP}"
+                 From; {SESSION_SETUP}"
             ))
         }
         _ => jmap_failure(error),
@@ -689,15 +690,7 @@ fn drafts_mailbox(ids: Vec<String>) -> Result<String, Failure> {
 /// The email a reply answers, or the caller's error when it does not exist.
 fn original(response: &Response, call: &CallId, id: &str) -> Result<Email, Failure> {
     let got = Email::get(response.result(call).map_err(jmap_failure)?).map_err(jmap_failure)?;
-    if let Some(email) = got.list.into_iter().find(|email| email.id == id) {
-        return Ok(email);
-    }
-    if got.not_found.iter().any(|missing| missing == id) {
-        return Err(invalid(format!("no email with id `{id}`")));
-    }
-    Err(internal(format!(
-        "{API_NAME}'s Email/get answered neither email `{id}` nor its absence"
-    )))
+    the_one(got, id, |email| &email.id, EmailGet::METHOD, "email")
 }
 
 /// Whom a reply goes to: the original's `replyTo` when it names anyone, else
@@ -820,14 +813,14 @@ fn created(found: &Found, set: &Value) -> Result<Next, Failure> {
 mod tests {
     use brenn_provider_kit::testutil::{Answered, MemoryHost, failure};
     use brenn_provider_kit::{Delivered, ErrorKind, Input, NestedError};
-    use fastmail_jmap::session::{CORE, MAIL, SUBMISSION};
+    use fastmail_jmap::session::CORE;
     use fastmail_provider::failure::{FORBIDDEN_CHANGE, READ_ONLY_TOKEN};
     use fastmail_provider::testutil::{
-        HOST_ARGS_CAP_BYTES, completed, jmap, session_body, settings,
+        HOST_ARGS_CAP_BYTES, completed, incoming, jmap, row, session_body, settings,
     };
 
     use super::super::FastmailWrite;
-    use super::super::tests::{admitted_args, answered, incoming, row, set_answer};
+    use super::super::tests::{admitted_args, answered, set_answer};
     use super::*;
     use crate::spec::Provided;
 
@@ -951,7 +944,7 @@ mod tests {
         let refusal = format!(
             "this account's session does not advertise `urn:ietf:params:jmap:submission` with a \
              primary account, so no sending identity can be read for the draft's From; \
-             {SUBMISSION_SETUP}"
+             {SESSION_SETUP}"
         );
         let state = row(DRAFT, admitted_args(DRAFT), SESSION_STEP, json!({}));
         for session in [
@@ -1262,7 +1255,7 @@ mod tests {
                 answered(&state, identity_error(kind)),
                 Next::Fail(internal(format!(
                     "Fastmail: Identity/get failed: {kind}; no sending identity can be read for \
-                     the draft's From; {SUBMISSION_SETUP}"
+                     the draft's From; {SESSION_SETUP}"
                 )))
             );
         }

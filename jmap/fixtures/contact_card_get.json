@@ -1,0 +1,134 @@
+{
+  "accountId": "a1",
+  "state": "s1",
+  "list": [
+    {
+      "@type": "Card",
+      "version": "1.0",
+      "id": "c1",
+      "uid": "urn:uuid:03a0e51f-d1aa-4385-8a53-e29025acd8af",
+      "kind": "individual",
+      "addressBookIds": { "b1": true, "b2": true, "b3": false },
+      "created": "2022-09-30T14:35:10Z",
+      "updated": "2022-11-23T15:01:32Z",
+      "name": {
+        "components": [
+          { "kind": "title", "value": "Mr." },
+          { "kind": "given", "value": "John" },
+          { "kind": "given2", "value": "Quinlan" },
+          { "kind": "surname", "value": "Public" },
+          { "kind": "separator", "value": ", " },
+          { "kind": "generation", "value": "Esq." }
+        ],
+        "isOrdered": true,
+        "sortAs": { "surname": "Public" }
+      },
+      "nicknames": {
+        "k391": { "name": "Johnny" },
+        "k392": { "name": "JQ", "contexts": { "work": true }, "pref": 1 }
+      },
+      "organizations": {
+        "o2": {
+          "name": "ABC, Inc.",
+          "units": [ { "name": "North American Division" }, { "name": "Marketing" } ],
+          "sortAs": "ABC"
+        },
+        "o1": {
+          "units": [ { "name": "Volunteers" } ]
+        }
+      },
+      "titles": {
+        "le9": { "kind": "title", "name": "Project Leader", "organizationId": "o2" },
+        "k2": { "name": "Treasurer" }
+      },
+      "emails": {
+        "e1": { "contexts": { "work": true }, "address": "jqpublic@xyz.example.com" },
+        "e2": { "address": "jane_doe@example.com", "pref": 2 },
+        "e3": { "address": "alice@example.com", "label": "home", "pref": 1, "contexts": { "private": true, "work": false } }
+      },
+      "onlineServices": {
+        "x-social": {
+          "service": "Mastodon",
+          "user": "@alice@example2.com",
+          "uri": "https://example2.com/@alice"
+        }
+      },
+      "phones": {
+        "tel0": {
+          "contexts": { "private": true },
+          "features": { "voice": true },
+          "number": "tel:+1-555-555-5555;ext=5555",
+          "pref": 1
+        },
+        "tel3": {
+          "contexts": { "work": true },
+          "features": { "voice": true, "text": true },
+          "number": "tel:+1-201-555-0123"
+        }
+      },
+      "addresses": {
+        "k23": {
+          "contexts": { "work": true },
+          "components": [
+            { "kind": "number", "value": "54321" },
+            { "kind": "separator", "value": " " },
+            { "kind": "name", "value": "Oak St" },
+            { "kind": "locality", "value": "Reston" },
+            { "kind": "region", "value": "VA" },
+            { "kind": "separator", "value": " " },
+            { "kind": "postcode", "value": "20190" },
+            { "kind": "country", "value": "USA" }
+          ],
+          "countryCode": "US",
+          "defaultSeparator": ", ",
+          "isOrdered": true
+        },
+        "k24": {
+          "full": "4445 Tree Street\nNew England, ND 58647\nUSA",
+          "pref": 1
+        }
+      },
+      "anniversaries": {
+        "k8": { "kind": "birth", "date": { "year": 1953, "month": 4, "day": 15 } },
+        "k9": {
+          "kind": "death",
+          "date": { "@type": "Timestamp", "utc": "2019-10-15T23:10:00Z" },
+          "place": { "full": "4445 Tree Street\nNew England, ND 58647\nUSA" }
+        },
+        "k10": { "kind": "wedding", "date": { "@type": "PartialDate", "month": 6, "day": 21 } },
+        "k11": { "kind": "x-graduation", "date": { "year": 1975 } }
+      },
+      "notes": {
+        "n1": {
+          "note": "Open office hours are 1600 to 1715 EST, Mon-Fri",
+          "created": "2022-11-23T15:01:32Z",
+          "author": { "name": "John" }
+        },
+        "n2": { "note": "Prefers \"JQ\".\nCall after 10." }
+      },
+      "media": {
+        "res45": { "kind": "photo", "uri": "data:image/png;base64,AAAA" }
+      },
+      "example.com:favoriteColor": "blue"
+    },
+    {
+      "id": "c2",
+      "addressBookIds": { "b1": true }
+    },
+    {
+      "@type": "Card",
+      "version": "1.0",
+      "id": "c3",
+      "kind": "group",
+      "uid": "urn:uuid:ab4310aa-fa43-11e9-8f0b-362b9e155667",
+      "addressBookIds": { "b1": true },
+      "name": { "full": "The Doe family" },
+      "members": {
+        "urn:uuid:b8767877-b4a1-4c70-9acc-505d3819e519": true,
+        "urn:uuid:03a0e51f-d1aa-4385-8a53-e29025acd8af": true,
+        "urn:uuid:00000000-0000-0000-0000-000000000000": false
+      }
+    }
+  ],
+  "notFound": ["c9"]
+}

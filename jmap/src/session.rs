@@ -1,3 +1,5 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use serde_json::Value;
 
 use crate::error::Error;
@@ -16,51 +18,69 @@ pub const MAIL: &str = "urn:ietf:params:jmap:mail";
 /// The JMAP submission capability (RFC 8621 section 1.3.4), under which
 /// sending identities are read.
 pub const SUBMISSION: &str = "urn:ietf:params:jmap:submission";
-// TODO(sieve-capability-check): whether Fastmail's session advertises
-// urn:ietf:params:jmap:sieve (RFC 9661) decides how filters are authored.
+/// The JMAP contacts capability (RFC 9610 section 1.4.1).
+pub const CONTACTS: &str = "urn:ietf:params:jmap:contacts";
+// TODO(sieve-filters-without-jmap-sieve): Fastmail offers no JMAP Sieve
+// capability (RFC 9661); filter authoring has no supported route.
 
-/// What a mail call needs from the session object (RFC 8620 section 2).
+/// What a call needs from the session object (RFC 8620 section 2): the
+/// capabilities it advertises and the primary account of each.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Session {
-    pub mail_account_id: String,
-    /// The primary account for submission; `None` when the capability is not
-    /// advertised or no primary account names it.
-    pub submission_account_id: Option<String>,
+    capabilities: BTreeSet<String>,
+    primary_accounts: BTreeMap<String, String>,
 }
 
-/// Checks that the server advertises mail and reads the primary account for
-/// mail, and for submission when there is one. A session without submission
-/// is not an error: only a caller that reads identities needs it. `apiUrl` is
-/// not read: the endpoint is fixed by `API_PATH`, and the deployment's clause
-/// admits that path and no other.
+impl Session {
+    /// The primary account for `capability`. A capability the session does
+    /// not advertise, or one with no string-valued primary account, is
+    /// `Error::Session`.
+    pub fn primary_account(&self, capability: &str) -> Result<&str, Error> {
+        if !self.capabilities.contains(capability) {
+            return Err(Error::Session(format!(
+                "the account does not advertise {capability}"
+            )));
+        }
+        self.primary_accounts
+            .get(capability)
+            .map(String::as_str)
+            .ok_or_else(|| Error::Session(format!("no primary account for {capability}")))
+    }
+}
+
+/// Checks that the server advertises core and reads the capabilities and
+/// primary accounts. No data-type capability is required here: a caller asks
+/// `Session::primary_account` for the one it uses. A `primaryAccounts` entry
+/// that is not a string is treated as absent. `apiUrl` is not read: the
+/// endpoint is fixed by `API_PATH`, and the deployment's clause admits that
+/// path and no other.
 pub fn parse(session: &Value) -> Result<Session, Error> {
     let capabilities = session
         .get("capabilities")
         .and_then(Value::as_object)
         .ok_or_else(|| Error::Shape("session has no capabilities object".into()))?;
-    if !capabilities.contains_key(MAIL) {
+    if !capabilities.contains_key(CORE) {
         return Err(Error::Session(format!(
-            "the account does not advertise {MAIL}"
+            "the account does not advertise {CORE}"
         )));
     }
-    let mail_account_id = session
+    let primary_accounts = session
         .get("primaryAccounts")
-        .and_then(|accounts| accounts.get(MAIL))
-        .and_then(Value::as_str)
-        .ok_or_else(|| Error::Session(format!("no primary account for {MAIL}")))?
-        .to_owned();
-    let submission_account_id = if capabilities.contains_key(SUBMISSION) {
-        session
-            .get("primaryAccounts")
-            .and_then(|accounts| accounts.get(SUBMISSION))
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-    } else {
-        None
-    };
+        .and_then(Value::as_object)
+        .map(|accounts| {
+            accounts
+                .iter()
+                .filter_map(|(capability, account)| {
+                    account
+                        .as_str()
+                        .map(|account| (capability.clone(), account.to_owned()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     Ok(Session {
-        mail_account_id,
-        submission_account_id,
+        capabilities: capabilities.keys().cloned().collect(),
+        primary_accounts,
     })
 }
 
@@ -72,57 +92,96 @@ mod tests {
         serde_json::from_str(include_str!("../fixtures/session.json")).unwrap()
     }
 
+    fn contacts_fixture() -> Value {
+        serde_json::from_str(include_str!("../fixtures/session_contacts.json")).unwrap()
+    }
+
+    fn refusal(session: &Session, capability: &str) -> String {
+        match session.primary_account(capability) {
+            Err(Error::Session(message)) => message,
+            other => panic!("expected a session error, got {other:?}"),
+        }
+    }
+
     #[test]
     fn reads_the_primary_mail_and_submission_accounts() {
+        let session = parse(&fixture()).unwrap();
+        assert_eq!(session.primary_account(MAIL).unwrap(), "a1");
+        assert_eq!(session.primary_account(SUBMISSION).unwrap(), "a1");
+    }
+
+    #[test]
+    fn a_contacts_only_session_reads_its_contacts_account_and_no_mail() {
+        let session = parse(&contacts_fixture()).unwrap();
+        assert_eq!(session.primary_account(CONTACTS).unwrap(), "a1");
         assert_eq!(
-            parse(&fixture()).unwrap(),
-            Session {
-                mail_account_id: "a1".into(),
-                submission_account_id: Some("a1".into()),
-            }
+            refusal(&session, MAIL),
+            "the account does not advertise urn:ietf:params:jmap:mail"
         );
     }
 
     #[test]
-    fn a_session_without_submission_reads_with_none() {
+    fn an_unadvertised_capability_is_refused() {
         let mut session = fixture();
         session["capabilities"]
             .as_object_mut()
             .unwrap()
             .remove(SUBMISSION);
-        assert_eq!(parse(&session).unwrap().submission_account_id, None);
+        assert_eq!(
+            refusal(&parse(&session).unwrap(), SUBMISSION),
+            "the account does not advertise urn:ietf:params:jmap:submission"
+        );
+        assert_eq!(
+            refusal(&parse(&fixture()).unwrap(), CONTACTS),
+            "the account does not advertise urn:ietf:params:jmap:contacts"
+        );
     }
 
     #[test]
-    fn submission_without_a_primary_account_reads_with_none() {
+    fn an_advertised_capability_without_a_string_primary_account_is_refused() {
         let mut session = fixture();
         session["primaryAccounts"]
             .as_object_mut()
             .unwrap()
-            .remove(SUBMISSION);
-        assert_eq!(parse(&session).unwrap().submission_account_id, None);
-        session["primaryAccounts"][SUBMISSION] = serde_json::json!(7);
-        assert_eq!(parse(&session).unwrap().submission_account_id, None);
+            .remove(MAIL);
+        assert_eq!(
+            refusal(&parse(&session).unwrap(), MAIL),
+            "no primary account for urn:ietf:params:jmap:mail"
+        );
+        session["primaryAccounts"][MAIL] = serde_json::json!(7);
+        assert_eq!(
+            refusal(&parse(&session).unwrap(), MAIL),
+            "no primary account for urn:ietf:params:jmap:mail"
+        );
+        session["primaryAccounts"][MAIL] = Value::Null;
+        assert_eq!(
+            refusal(&parse(&session).unwrap(), MAIL),
+            "no primary account for urn:ietf:params:jmap:mail"
+        );
     }
 
     #[test]
-    fn a_session_without_mail_is_refused() {
+    fn a_session_without_primary_accounts_parses_and_names_none() {
+        let mut session = fixture();
+        session.as_object_mut().unwrap().remove("primaryAccounts");
+        assert_eq!(
+            refusal(&parse(&session).unwrap(), MAIL),
+            "no primary account for urn:ietf:params:jmap:mail"
+        );
+    }
+
+    #[test]
+    fn a_session_without_core_is_refused() {
         let mut session = fixture();
         session["capabilities"]
             .as_object_mut()
             .unwrap()
-            .remove(MAIL);
-        assert!(matches!(parse(&session), Err(Error::Session(_))));
-    }
-
-    #[test]
-    fn a_session_without_a_primary_mail_account_is_refused() {
-        let mut session = fixture();
-        session["primaryAccounts"]
-            .as_object_mut()
-            .unwrap()
-            .remove(MAIL);
-        assert!(matches!(parse(&session), Err(Error::Session(_))));
+            .remove(CORE);
+        assert!(matches!(
+            parse(&session),
+            Err(Error::Session(message))
+                if message == "the account does not advertise urn:ietf:params:jmap:core"
+        ));
     }
 
     #[test]
