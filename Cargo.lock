@@ -4,42 +4,42 @@ version = 4
 
 [[package]]
 name = "fastmail-calendar"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "fastmail-calendar-write"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "fastmail-contacts"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "fastmail-contacts-write"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "fastmail-dav"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "roxmltree",
 ]
 
 [[package]]
 name = "fastmail-jmap"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "fastmail-mail-read"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "fastmail-mail-write"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "fastmail-provider"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "memchr"
