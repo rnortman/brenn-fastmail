@@ -41,9 +41,18 @@ buildifier_test(
     workspace = "//:MODULE.bazel",
 )
 
-# The release: four backend packages, `fastmail-contacts`,
-# `fastmail-contacts-write`, `fastmail-mail-read` and `fastmail-mail-write`,
-# each built from its component artifact and its authored specification.
+# The release: five backend packages, `fastmail-calendar`,
+# `fastmail-contacts`, `fastmail-contacts-write`, `fastmail-mail-read` and
+# `fastmail-mail-write`, each built from its component artifact and its
+# authored specification.
+component_package(
+    name = "fastmail-calendar_package",
+    component = "//fastmail-calendar:component",
+    package = "fastmail-calendar",
+    spec = "//spec:fastmail-calendar.brenn",
+    world = "brenn:processor",
+)
+
 component_package(
     name = "fastmail-contacts_package",
     component = "//fastmail-contacts:component",
@@ -79,6 +88,12 @@ component_package(
 # The capabilities each artifact imports against the ones its specification
 # declares.
 grant_parity_test(
+    name = "fastmail-calendar_grant_parity",
+    component = "//fastmail-calendar:component",
+    spec = "//spec:fastmail-calendar.brenn",
+)
+
+grant_parity_test(
     name = "fastmail-contacts_grant_parity",
     component = "//fastmail-contacts:component",
     spec = "//spec:fastmail-contacts.brenn",
@@ -106,6 +121,7 @@ deployed_components_test(
     name = "deployed_components_test",
     manifest = "deployed-components.txt",
     packages = [
+        ":fastmail-calendar_package",
         ":fastmail-contacts-write_package",
         ":fastmail-contacts_package",
         ":fastmail-mail-read_package",
@@ -115,10 +131,13 @@ deployed_components_test(
 
 # The tree a deployment installs: `components/` and `modules/`, the staged
 # `modules/` byte-equal to the authored specification root.
+# TODO(bundle-carries-no-licence-texts): the tree holds no licence text, for
+# this project or for the crates its components link.
 component_bundle(
     name = "bundle",
     manifest = "deployed-components.txt",
     packages = [
+        ":fastmail-calendar_package",
         ":fastmail-contacts-write_package",
         ":fastmail-contacts_package",
         ":fastmail-mail-read_package",

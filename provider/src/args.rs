@@ -86,6 +86,38 @@ pub fn keyword_arg(args: &Args, key: &str) -> Result<Option<String>, String> {
     }
 }
 
+/// A date argument as a UTC instant, `2026-11-08T10:00:00Z` (an RFC 8620
+/// `UTCDate`), as [`utc_date`] reads it; absent is `None`.
+pub fn utc_date_arg(args: &Args, key: &str) -> Result<Option<String>, String> {
+    let refusal =
+        || format!("`{key}` must be a date (2026-11-08) or a UTC instant (2026-11-08T10:00:00Z)");
+    match args.get(key) {
+        None => Ok(None),
+        Some(Value::String(text)) => utc_date(text).map(Some).ok_or_else(refusal),
+        Some(_) => Err(refusal()),
+    }
+}
+
+/// `text`, a date (`2026-11-08`) or a UTC instant to the second
+/// (`2026-11-08T10:00:00Z`) in exactly that shape, as a UTC instant: a date
+/// is its midnight. Field ranges are the server's to check.
+pub fn utc_date(text: &str) -> Option<String> {
+    let fits = |shape: &[u8]| {
+        text.len() == shape.len()
+            && text.bytes().zip(shape).all(|(b, &s)| match s {
+                b'0' => b.is_ascii_digit(),
+                _ => b == s,
+            })
+    };
+    if fits(b"0000-00-00T00:00:00Z") {
+        Some(text.to_owned())
+    } else if fits(b"0000-00-00") {
+        Some(format!("{text}T00:00:00Z"))
+    } else {
+        None
+    }
+}
+
 /// An argument that is 1 to `max` distinct items, each as `item` reads it;
 /// absent is `None`. Refusals say "`key` must be an array of 1 to `max`"
 /// `what`, give `item`'s refusal, or say that `key` names an item twice.
@@ -365,5 +397,38 @@ mod tests {
         ] {
             assert!(!wire_safe(unsafe_), "{unsafe_:?}");
         }
+    }
+
+    #[test]
+    fn dates_take_exactly_the_patterns_shape() {
+        assert_eq!(
+            utc_date("2026-11-08").as_deref(),
+            Some("2026-11-08T00:00:00Z")
+        );
+        assert_eq!(
+            utc_date("2026-11-08T10:00:00Z").as_deref(),
+            Some("2026-11-08T10:00:00Z")
+        );
+        for refused in [
+            "2026-11-08T10:00:00+01:00",
+            "2026-11-08T10:00:00",
+            "2026-11-08T10:00:00.5Z",
+            "2026-11-8",
+            "20261108",
+            "yesterday",
+            "",
+        ] {
+            assert_eq!(utc_date(refused), None, "{refused}");
+        }
+        let args = map(json!({ "after": "2026-11-08", "before": 1 }));
+        assert_eq!(
+            utc_date_arg(&args, "after"),
+            Ok(Some("2026-11-08T00:00:00Z".to_owned()))
+        );
+        assert_eq!(utc_date_arg(&args, "absent"), Ok(None));
+        assert_eq!(
+            utc_date_arg(&args, "before").unwrap_err(),
+            "`before` must be a date (2026-11-08) or a UTC instant (2026-11-08T10:00:00Z)"
+        );
     }
 }

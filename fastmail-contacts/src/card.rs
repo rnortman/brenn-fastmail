@@ -10,6 +10,7 @@ use fastmail_jmap::{
     Organization, Phone, PostalAddress, Title,
 };
 use fastmail_provider::contacts::list_name;
+use fastmail_provider::results::{capped_list, cut_value, cut_width};
 use serde_json::{Value, json};
 
 /// Serialized-width bounds on strings copied out of a card, by what the
@@ -47,56 +48,16 @@ const SET_MAX: usize = 8;
 /// The most address book ids a summary carries.
 const SUMMARY_ADDRESS_BOOKS_MAX: usize = 10;
 
-/// The bytes `c` occupies inside a JSON string as `serde_json` writes it.
-fn char_width(c: char) -> usize {
-    match c {
-        '"' | '\\' | '\u{8}' | '\t' | '\n' | '\u{c}' | '\r' => 2,
-        c if u32::from(c) < 0x20 => 6,
-        c => c.len_utf8(),
-    }
-}
-
-/// `text` cut to the longest prefix of whole characters whose serialized
-/// widths sum to at most `max`, ending in `…` when cut, and whether it was
-/// cut.
-pub fn cut_width(text: &str, max: usize) -> (String, bool) {
-    let mut width = 0;
-    for (at, c) in text.char_indices() {
-        width += char_width(c);
-        if width > max {
-            return (format!("{}…", &text[..at]), true);
-        }
-    }
-    (text.to_owned(), false)
-}
-
-fn text(value: &str, max: usize) -> Value {
-    json!(cut_width(value, max).0)
-}
-
 /// `value` cut at `max` at `key`; nothing when absent.
 fn put(out: &mut Args, key: &str, value: Option<&str>, max: usize) {
     if let Some(value) = value {
-        out.insert(key.into(), text(value, max));
+        out.insert(key.into(), cut_value(value, max));
     }
 }
 
-/// At most `cap` of `items`, each through `show`, at `key`, and
-/// `<key>_omitted` counting the rest; nothing when `items` is empty.
-fn list<T>(out: &mut Args, key: &str, items: &[T], cap: usize, show: impl Fn(&T) -> Value) {
-    if items.is_empty() {
-        return;
-    }
-    let shown: Vec<Value> = items.iter().take(cap).map(show).collect();
-    out.insert(key.into(), Value::Array(shown));
-    if items.len() > cap {
-        out.insert(format!("{key}_omitted"), json!(items.len() - cap));
-    }
-}
-
-/// A list of strings, each cut at `max`, as [`list`] carries it.
+/// A list of strings, each cut at `max`, as [`capped_list`] carries it.
 fn strings(out: &mut Args, key: &str, items: &[String], cap: usize, max: usize) {
-    list(out, key, items, cap, |item| text(item, max));
+    capped_list(out, key, items, cap, |item| cut_value(item, max));
 }
 
 /// `contexts` or `features`: at most `SET_MAX`, each cut at `KIND_MAX`.
@@ -128,8 +89,8 @@ fn first(out: &mut Args, key: &str, value: Option<&str>, count: usize) {
 /// books.
 pub fn summary(card: &ContactCard) -> Value {
     let mut out = Args::new();
-    out.insert("id".into(), text(&card.id, ID_MAX));
-    out.insert("kind".into(), text(&card.kind, KIND_MAX));
+    out.insert("id".into(), cut_value(&card.id, ID_MAX));
+    out.insert("kind".into(), cut_value(&card.kind, KIND_MAX));
     put(&mut out, "name", display_name(card).as_deref(), NAME_MAX);
     let email = card.emails.first().map(|email| email.address.as_str());
     first(&mut out, "email", email, card.emails.len());
@@ -159,9 +120,9 @@ pub fn summary(card: &ContactCard) -> Value {
 /// value.
 pub fn read(card: &ContactCard) -> Value {
     let mut out = Args::new();
-    out.insert("id".into(), text(&card.id, ID_MAX));
+    out.insert("id".into(), cut_value(&card.id, ID_MAX));
     put(&mut out, "uid", card.uid.as_deref(), ID_MAX);
-    out.insert("kind".into(), text(&card.kind, KIND_MAX));
+    out.insert("kind".into(), cut_value(&card.kind, KIND_MAX));
     put(&mut out, "created", card.created.as_deref(), TIME_MAX);
     put(&mut out, "updated", card.updated.as_deref(), TIME_MAX);
     put(&mut out, "name", display_name(card).as_deref(), NAME_MAX);
@@ -171,76 +132,76 @@ pub fn read(card: &ContactCard) -> Value {
             .iter()
             .filter(|component| component.kind != "separator")
             .collect();
-        list(
+        capped_list(
             &mut out,
             "name_components",
             &components,
             NAME_COMPONENTS_MAX,
             |component| {
                 json!({
-                    "kind": text(&component.kind, KIND_MAX),
-                    "value": text(&component.value, NAME_MAX),
+                    "kind": cut_value(&component.kind, KIND_MAX),
+                    "value": cut_value(&component.value, NAME_MAX),
                 })
             },
         );
     }
-    list(
+    capped_list(
         &mut out,
         list_name(EntryList::Nicknames),
         &card.nicknames,
         NICKNAMES_MAX,
         nickname,
     );
-    list(
+    capped_list(
         &mut out,
         list_name(EntryList::Organizations),
         &card.organizations,
         ORGANIZATIONS_MAX,
         organization,
     );
-    list(
+    capped_list(
         &mut out,
         list_name(EntryList::Titles),
         &card.titles,
         TITLES_MAX,
         |title| self::title(title, &card.organizations),
     );
-    list(
+    capped_list(
         &mut out,
         list_name(EntryList::Emails),
         &card.emails,
         EMAILS_MAX,
         email,
     );
-    list(
+    capped_list(
         &mut out,
         list_name(EntryList::Phones),
         &card.phones,
         PHONES_MAX,
         phone,
     );
-    list(
+    capped_list(
         &mut out,
         list_name(EntryList::OnlineServices),
         &card.online_services,
         ONLINE_SERVICES_MAX,
         online_service,
     );
-    list(
+    capped_list(
         &mut out,
         list_name(EntryList::Addresses),
         &card.addresses,
         ADDRESSES_MAX,
         address,
     );
-    list(
+    capped_list(
         &mut out,
         list_name(EntryList::Anniversaries),
         &card.anniversaries,
         ANNIVERSARIES_MAX,
         anniversary,
     );
-    list(
+    capped_list(
         &mut out,
         list_name(EntryList::Notes),
         &card.notes,
@@ -289,7 +250,7 @@ fn entry(key: &str) -> Args {
 
 fn nickname(nickname: &Nickname) -> Value {
     let mut out = entry(&nickname.key);
-    out.insert("name".into(), text(&nickname.name, NAME_MAX));
+    out.insert("name".into(), cut_value(&nickname.name, NAME_MAX));
     Value::Object(out)
 }
 
@@ -304,8 +265,8 @@ fn organization(organization: &Organization) -> Value {
 /// card has that organization and it has a name.
 fn title(title: &Title, organizations: &[Organization]) -> Value {
     let mut out = entry(&title.key);
-    out.insert("name".into(), text(&title.name, NAME_MAX));
-    out.insert("kind".into(), text(&title.kind, KIND_MAX));
+    out.insert("name".into(), cut_value(&title.name, NAME_MAX));
+    out.insert("kind".into(), cut_value(&title.kind, KIND_MAX));
     let named = title.organization_id.as_ref().and_then(|id| {
         organizations
             .iter()
@@ -318,7 +279,7 @@ fn title(title: &Title, organizations: &[Organization]) -> Value {
 
 fn email(email: &CardEmail) -> Value {
     let mut out = entry(&email.key);
-    out.insert("address".into(), text(&email.address, NAME_MAX));
+    out.insert("address".into(), cut_value(&email.address, NAME_MAX));
     set(&mut out, "contexts", &email.contexts);
     put(&mut out, "label", email.label.as_deref(), ID_MAX);
     pref(&mut out, email.pref);
@@ -327,7 +288,7 @@ fn email(email: &CardEmail) -> Value {
 
 fn phone(phone: &Phone) -> Value {
     let mut out = entry(&phone.key);
-    out.insert("number".into(), text(&phone.number, NAME_MAX));
+    out.insert("number".into(), cut_value(&phone.number, NAME_MAX));
     set(&mut out, "features", &phone.features);
     set(&mut out, "contexts", &phone.contexts);
     put(&mut out, "label", phone.label.as_deref(), ID_MAX);
@@ -362,8 +323,11 @@ fn address(address: &PostalAddress) -> Value {
 
 fn anniversary(anniversary: &Anniversary) -> Value {
     let mut out = entry(&anniversary.key);
-    out.insert("kind".into(), text(&anniversary.kind, KIND_MAX));
-    out.insert("date".into(), text(&anniversary.date.to_text(), TIME_MAX));
+    out.insert("kind".into(), cut_value(&anniversary.kind, KIND_MAX));
+    out.insert(
+        "date".into(),
+        cut_value(&anniversary.date.to_text(), TIME_MAX),
+    );
     Value::Object(out)
 }
 
@@ -374,45 +338,4 @@ fn note(note: &Note) -> Value {
     put(&mut out, "created", note.created.as_deref(), TIME_MAX);
     out.insert("truncated".into(), json!(truncated));
     Value::Object(out)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn width(text: &str) -> usize {
-        serde_json::to_string(text).unwrap().len() - 2
-    }
-
-    #[test]
-    fn cut_width_bounds_the_serialized_width_on_a_character_boundary() {
-        assert_eq!(cut_width("hello", 5), ("hello".to_owned(), false));
-        assert_eq!(cut_width("hello", 4), ("hell…".to_owned(), true));
-        assert_eq!(cut_width("", 0), (String::new(), false));
-        // As the kit's `cut` would cut text with nothing to escape.
-        for (text, max) in [("héllo wörld", 3), ("😀😀", 5), ("abc", 2)] {
-            assert_eq!(cut_width(text, max), brenn_provider_kit::cut(text, max));
-        }
-        assert_eq!(cut_width("a\"b", 2), ("a…".to_owned(), true));
-        assert_eq!(cut_width("a\"b", 3), ("a\"…".to_owned(), true));
-        assert_eq!(cut_width("\n\n\n", 5), ("\n\n…".to_owned(), true));
-        assert_eq!(cut_width("\u{1}\u{1}", 11), ("\u{1}…".to_owned(), true));
-        assert_eq!(cut_width("é", 1), ("…".to_owned(), true));
-        for text in [
-            "a\"b\\c\nd\te\r\u{8}\u{c}\u{1}\u{1f}\u{7f}é😀".repeat(40),
-            "\u{1}".repeat(100),
-            "€".repeat(100),
-        ] {
-            for max in [0, 1, 5, 6, 7, 64, 255, 400] {
-                let (cut, was_cut) = cut_width(&text, max);
-                let kept = cut.strip_suffix('…').unwrap_or(&cut);
-                assert!(width(kept) <= max, "{max}: {kept:?}");
-                assert_eq!(was_cut, kept.len() < text.len());
-                if was_cut {
-                    let next = text[kept.len()..].chars().next().unwrap();
-                    assert!(width(kept) + width(&next.to_string()) > max);
-                }
-            }
-        }
-    }
 }

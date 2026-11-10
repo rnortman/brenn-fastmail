@@ -79,15 +79,25 @@ pin irrelevant. `make check` prints a notice while the line is in force.
   arguments, its result and the patch), `src/mail.rs` the mail methods,
   `src/contacts.rs` the contacts methods, the JSContact card reader, and the
   cards and patches the contacts write tools send.
+- `dav/` — `fastmail-dav`, the WebDAV and CalDAV crate, `jmap/`'s
+  counterpart with the same build shape. No I/O: `src/href.rs` turns a
+  server's href into a path brenn will send, `src/multistatus.rs` reads a
+  multi-status answer (through `roxmltree`, private to the crate),
+  `src/caldav.rs` holds the request bodies and their typed readers, and
+  `src/ical.rs` reads iCalendar by hand: content lines, parameters, TEXT
+  values and the shape of a date. Its fixtures are under `dav/fixtures/`.
 - `provider/` — `fastmail-provider`, the plumbing the provider components
-  share: settings, the `account`, id and keyword arguments, the session step
-  and the API call, and the mapping of Fastmail's answers onto the request's
-  failure. One target serves the components' wasm32 builds and their host
-  tests; its `testutil` module carries those tests' fixtures.
+  share: settings, the `account`, id, keyword and UTC date arguments, the
+  session step and the API call, the DAV call and the mapping of a DAV
+  answer's status (`src/dav.rs`), result bounds including `cut_width`, and
+  the mapping of Fastmail's answers onto the request's failure. One target
+  serves the components' wasm32 builds and their host tests; its `testutil`
+  module carries those tests' fixtures.
 - `spec/` — the components' authored specifications, the module root a
   deployment's `use @fastmail-mail-read::*;`,
-  `use @fastmail-mail-write::*;`, `use @fastmail-contacts::*;` and
-  `use @fastmail-contacts-write::*;` resolve against.
+  `use @fastmail-mail-write::*;`, `use @fastmail-contacts::*;`,
+  `use @fastmail-contacts-write::*;` and `use @fastmail-calendar::*;`
+  resolve against.
 - `fastmail-mail-read/` — the read provider: `src/logic.rs` (arguments, JMAP
   requests, answers and compaction, all host-testable), `src/html.rs` (HTML
   parts as plain text) and `src/lib.rs` (the guest glue).
@@ -103,8 +113,12 @@ pin irrelevant. `make check` prints a notice while the line is in force.
   (the create and update arguments, the step machine, the update's patch
   from its read, requests and failures, all host-testable) and `src/lib.rs`
   (the guest glue).
-- `config/example.brenn` — the deployer's document: the four key providers,
-  the four instances with their clauses and an agent granted the tools.
+- `fastmail-calendar/` — the calendar provider, over CalDAV: `src/logic.rs`
+  (arguments, the step machine, requests and failures, all host-testable),
+  `src/event.rs` (an event as a window's occurrence and as a full answer,
+  with every cap) and `src/lib.rs` (the guest glue).
+- `config/example.brenn` — the deployer's document: the five key providers,
+  the five instances with their clauses and an agent granted the tools.
   `//:example_fit` compiles it and `//:config_check` lowers it, so the
   example's shape and settings cannot drift from what brenn accepts; neither
   holds the agent's `tool` grants to the tools the instances provide, which
@@ -128,7 +142,7 @@ pin irrelevant. `make check` prints a notice while the line is in force.
 
 - `MODULE.bazel.lock` pins the Bazel module graph.
 - `Cargo.lock` and `cargo-bazel-lock.json` pin the workspace's hub,
-  `fastmail_crates`, empty today.
+  `fastmail_crates`: `roxmltree` and `memchr`, which `dav/` links.
 - `tools/scrub/Cargo.lock` and `tools/scrub/cargo-bazel-lock.json` pin the
   scanner's crates (`fastmail_scrub_crates`); `tools/allthechanges/Cargo.lock`
   and `tools/allthechanges/cargo-bazel-lock.json` the fragment tool's

@@ -16,9 +16,9 @@ Every entry is public writing.
 
 Attachment download and blob upload. Fastmail serves blobs from a download
 host other than the JMAP API host, so a provider that fetches an attachment
-needs that host as a second `api_hosts` entry on the key provider, and a
-binary body on the provider kit's call type, which the kit does not carry
-today; both are later work. Until then `FastmailRead` lists each attachment's
+needs that host as a second `api_hosts` entry on the key provider; that is
+later work. The provider kit carries a binary body on a call and reads an
+answer's bytes, which no tool here uses yet. Until then `FastmailRead` lists each attachment's
 metadata and fetches none. Brenn also bounds a call's body at 64 KiB of
 arguments and an answer at 512 KiB, so attachment download and blob upload are
 limited to small blobs until brenn's tracker entry

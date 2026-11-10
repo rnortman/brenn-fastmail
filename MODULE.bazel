@@ -45,9 +45,11 @@ bazel_dep(name = "buildifier_prebuilt", version = "10.1.0", dev_dependency = Tru
 # below, `.bazelversion`, and the fltk commit. Nothing checks them
 # mechanically; a mismatch fails at compile or at module resolution.
 bazel_dep(name = "brenn", version = "")
+
+# TODO(brenn-pin-on-branch-commit): brenn's public remote serves this commit from a branch, not from main.
 git_override(
     module_name = "brenn",
-    commit = "39bd068f82d0145375aea5899741a3c49c93d4e4",
+    commit = "227bedbab0b7f7c4992c4776a79cfb7a70af3a91",
     remote = "https://github.com/rnortman/brenn.git",
 )
 
@@ -99,10 +101,11 @@ use_repo(rust, "rust_toolchains")
 register_toolchains("@rust_toolchains//:all")
 
 # --- Third-party crates ---------------------------------------------------
-# This repository's own hub, empty today: every crate here takes `serde` and
-# `serde_json` from brenn's guest instance, because a derive from any other
-# instance satisfies none of brenn-guest's port bounds. The hub exists so the
-# next dependency has a place to go. The host triple is listed with wasm32
+# This repository's own hub: `roxmltree` and `memchr`, which `dav` links.
+# Every crate here takes `serde` and `serde_json` from brenn's guest instance,
+# because a derive from any other instance satisfies none of brenn-guest's
+# port bounds, so a crate that enables a `serde` feature must not be added to
+# this hub. The host triple is listed with wasm32
 # because crate_universe resolves features by running cargo on an
 # execution-platform triple.
 #

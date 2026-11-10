@@ -1,0 +1,67 @@
+/// Each user's Fastmail calendars read for an assistant over CalDAV
+/// (RFC 4791, RFC 4918 for WebDAV, RFC 5545 for the events), as native
+/// tools, each answered by `api-request` calls against the
+/// `api_key_provider` the instance names. That provider holds one account per
+/// user, or several, each a Fastmail app password as a `Basic` header value;
+/// `api-request` picks the calling user's, and attaches it host-side, so no
+/// password ever reaches this component. Every tool reads; nothing here
+/// writes to the account.
+///
+/// Every capability is load-bearing: `config` names the provider and the
+/// host, without which no call can be addressed; `store` carries each
+/// request's state between the activation that issues its nested call and
+/// the one that receives the answer; `tools` is the authority to call
+/// `api-request`; `provides` is what makes the tools exist; `log` records each
+/// step's tool, status and size — never a body or a header.
+///
+/// The instance's `config = { ... };` map is flat: `provider` is the
+/// `api_key_provider` name, whose `account` blocks bind each user's app
+/// password; `host` is the `host[:port]` Fastmail's CalDAV is served on
+/// (`caldav.fastmail.com`), which `api-request` matches against that
+/// provider's `api_hosts`. A missing or malformed key fails every activation,
+/// naming the key. The instance's clauses must admit `PROPFIND
+/// /dav/principals/`, `PROPFIND` of the principal and of the calendar home
+/// the server names, `REPORT` of each calendar and `GET` of each event, and
+/// no writing method: the clauses are what keeps the instance read-only,
+/// whatever the app password can do. A clause's `path` is not a boundary
+/// between a collection's members.
+///
+/// Size the instance's result inbox with a `channel at
+/// "brenn:tool-results/<slug>"` block: each live request has at most one
+/// nested call outstanding, so the window must hold Σ max_concurrency results,
+/// twice over for a re-delivered result — `retain_depth ≥ 2 × Σ`, rounded up
+/// to a power of two. This class's Σ is 10, so 32 holds it; the family default
+/// of 16 does not.
+///
+/// Every nested answer crosses the bus as a tool result, so Fastmail's body —
+/// a string inside `api-request`'s value, inside the result envelope — must
+/// fit `[messaging] max_body_bytes` (64 KiB default). Either raise that cap to
+/// carry the key provider's `max_response_bytes` (256 KiB default) with a
+/// margin for escaping, `messaging { max_body_bytes = 393216; }`, or lower
+/// `max_response_bytes` to fit the default cap. A busy calendar's window needs
+/// the raised cap. An answer over the bus cap never reaches this component as
+/// Fastmail's answer.
+component FastmailCalendar {
+  abi = processor;
+  requires = [log, store, config, tools, provides];
+  in tool-results;
+  in tool-requests;
+  provide fastmail-calendars {
+    mcp_name = "FastmailCalendars";
+    description = "List the calendars of the user's Fastmail account. `account` names which of the user's Fastmail accounts, by the name the operator gave it; omit it for the user's default or only account. A refusal listing account names means several are configured and none is the default: pass one. Answers `calendars`, by name then path, at most 100 (`calendars_omitted` counts the rest), each with `calendar` (its path, the handle `FastmailCalendarEvents` takes), `name` and `description` when the server gave them. A calendar whose path this tool cannot hand on has `unreachable: true` and no `calendar`. Task lists and the scheduling inbox and outbox are not listed. A refusal saying Fastmail refused the app password (HTTP 401) is the operator's to fix: the account's key file. Nothing is written.";
+    input_schema = """{ "type": "object", "properties": { "account": { "type": "string", "pattern": "^[a-z]([a-z0-9-]{0,253}[a-z0-9])?$" } }, "additionalProperties": false }""";
+    max_concurrency = 2;
+  }
+  provide fastmail-calendar-events {
+    mcp_name = "FastmailCalendarEvents";
+    description = "List the events of one of the user's Fastmail calendars that overlap a time window, each recurring event expanded by the server into its occurrences. `account` names which of the user's Fastmail accounts, by the name the operator gave it; omit it for the user's default or only account. A refusal listing account names means several are configured and none is the default: pass one. `calendar` is a `calendar` path from `FastmailCalendars` (one calendar per call: for a day across calendars, ask each), at most 1024 bytes. `from` and `to` are each a date (2026-11-02, read as its midnight UTC) or a UTC instant (2026-11-02T09:00:00Z); `to` must be later than `from`. `limit` (1-100, default 50) caps the events. Answers `from` and `to` as given, `total` (the occurrences in the window), `events` (the first `limit` by start, then path) and `events_omitted` when `total` exceeds `limit`. Each event has `event` (the path `FastmailCalendarEvent` takes; `unreachable: true` in its place when this tool cannot hand it on), `summary` and `location` (cut at 300 bytes, ending in `…`), `start`, `end` or else `duration` as written (PT1H), `status` as written (CONFIRMED, TENTATIVE, CANCELLED), and `recurrence_id` when it is an occurrence of a recurring event; each only when the event has it. `start`, `end` and `recurrence_id` are `{ date }` for an all-day value or `{ date_time }`: the server converts every time in a zone to UTC, so `date_time` ends in Z, except a floating local time, which has no Z and no zone; a `time_zone` the server still names is passed on. Nothing is computed: an all-day `end` is the day after the last day. A refusal naming `max_response_bytes`, `max_body_bytes` or HTTP 507 means the answer was too large: narrow the window with `from` and `to`. A refusal saying Fastmail refused the app password (HTTP 401) is the operator's to fix: the account's key file. Nothing is written.";
+    input_schema = """{ "type": "object", "properties": { "calendar": { "type": "string", "pattern": "^/([^/?#]+/)*$" }, "from": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)?$" }, "to": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)?$" }, "limit": { "type": "integer", "minimum": 1, "maximum": 100 }, "account": { "type": "string", "pattern": "^[a-z]([a-z0-9-]{0,253}[a-z0-9])?$" } }, "required": ["calendar", "from", "to"], "additionalProperties": false }""";
+    max_concurrency = 4;
+  }
+  provide fastmail-calendar-event {
+    mcp_name = "FastmailCalendarEvent";
+    description = "Read one event of the user's Fastmail calendars in full. `account` names which of the user's Fastmail accounts, by the name the operator gave it; omit it for the user's default or only account. A refusal listing account names means several are configured and none is the default: pass one. `event` is an `event` path from `FastmailCalendarEvents`, at most 1024 bytes. Answers, each key only when the event has it: `event`, `uid`, `summary` and `location` (cut at 1000 bytes), `description` (as written, cut at 8000 bytes with `description_truncated: true`), `start`, `end` or else `duration`, `status` and `recurrence_id`, as `FastmailCalendarEvents` gives them except that a time in a named zone is shown as written, `{ date_time, time_zone }`, not converted; `organizer` (`email`, `name`), `attendees` (`email`, `name`, `response` — the participation status as written, such as ACCEPTED or NEEDS-ACTION — and `role`; at most 50), `recurrence` (the RRULE, RDATE and EXDATE lines as text, RRULE:FREQ=WEEKLY;BYDAY=MO; at most 20) and `overrides` (the occurrences of a recurring event that were changed, by `recurrence_id`, each in `FastmailCalendarEvents`'s shape without `event`; at most 50). A list with entries left out carries `<list>_omitted` counting them, and a long string is cut, ending in `…`. Alarms are not read. A path with no event is refused. A refusal naming `max_response_bytes` or `max_body_bytes` means the event is too large to read: the operator raises that setting. A refusal saying Fastmail refused the app password (HTTP 401) is the operator's to fix: the account's key file. Nothing is written.";
+    input_schema = """{ "type": "object", "properties": { "event": { "type": "string", "pattern": "^(/[^/?#]+)+$" }, "account": { "type": "string", "pattern": "^[a-z]([a-z0-9-]{0,253}[a-z0-9])?$" } }, "required": ["event"], "additionalProperties": false }""";
+    max_concurrency = 4;
+  }
+}

@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use brenn_provider_kit::{ApiCall, Args, Call, Failure, Next, Query};
+use brenn_provider_kit::{ApiCall, Args, Body, Call, Failure, Next, Query};
 use fastmail_jmap::session::{self, API_PATH, SESSION_PATH};
 use fastmail_jmap::{Request, Session};
 use serde_json::{Value, json};
@@ -34,7 +34,7 @@ pub fn api_call(
         path: path.to_owned(),
         query: Query::new(),
         headers: BTreeMap::new(),
-        body,
+        body: body.map(Body::Text),
     }
 }
 
@@ -114,7 +114,7 @@ mod tests {
             (call.api.method.as_str(), call.api.path.as_str()),
             ("POST", "/jmap/api")
         );
-        assert_eq!(call.api.body, Some(request.to_body()));
+        assert_eq!(call.api.body, Some(Body::Text(request.to_body())));
     }
 
     /// The session `session_with` answers, as the session step reads it.

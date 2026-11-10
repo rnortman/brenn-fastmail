@@ -3,16 +3,18 @@
 ## What this is
 
 Fastmail tooling for Brenn: provider components that reach Fastmail over JMAP
-(RFC 8620, RFC 8621) through Brenn's `api-request` tool, built outside brenn's
+(RFC 8620, RFC 8621) and CalDAV (RFC 4791) through Brenn's `api-request` tool, built outside brenn's
 repository with brenn's component rules and packaged as a bundle a deployment
 installs beside brenn's release. `README.md` is the project's page and the
 deployer's runbook; read it first. `docs/developing.md` is the developer's
 guide: building, the gate, the layout.
 
 `jmap/` is the transport-free JMAP crate: request building and response
-reading, no HTTP, no credential. `fastmail-mail-read/`,
+reading, no HTTP, no credential; `dav/` is its WebDAV and CalDAV
+counterpart. `fastmail-mail-read/`,
 `fastmail-mail-write/`, `fastmail-contacts/` and `fastmail-contacts-write/` are
-the providers, `provider/` the plumbing they share,
+the JMAP providers and `fastmail-calendar/` the CalDAV one, `provider/` the
+plumbing they share,
 their specifications in `spec/`.
 `config/example.brenn` is the deployer's document the README quotes;
 `//:example_fit` compiles it and `//:config_check` lowers it, holding its
@@ -42,8 +44,9 @@ with `sed`); there is no target that runs `cargo`, and the gate never will.
   arrives through a brenn macro at a pin bump, or a host whose Bazel falls
   back to a sandbox without network isolation, passes `make check` unnoticed.
 - `Cargo.toml` + `Cargo.lock` exist for `crate_universe` only. The workspace
-  hub, `fastmail_crates`, is empty: every crate takes `serde` and `serde_json`
-  from brenn's guest instance. Two more hubs pin build tools, each with its
+  hub, `fastmail_crates`, holds `roxmltree` and `memchr` for `dav/`; every
+  crate takes `serde` and `serde_json` from brenn's guest instance, and a
+  crate that enables a `serde` feature must not be added. Two more hubs pin build tools, each with its
   own `Cargo.lock` and `cargo-bazel-lock.json`: `tools/scrub/` (the secret
   scanner) and `tools/allthechanges/` (the changelog and TODO fragment tool).
   Every hub is named `fastmail_*` so it can collide with nothing brenn owns.

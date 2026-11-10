@@ -30,7 +30,9 @@ use fastmail_jmap::{
     Address, BodyPart, CallId, Email, EmailGet, EmailQuery, Filter, FilterCondition, Ids, Mailbox,
     MailboxGet, QueryResult, Request, Response, Sort, Thread, ThreadGet, result_ref,
 };
-use fastmail_provider::args::{ACCOUNT_ARG, ID_MAX_CHARS, account_arg, keyword_arg, token};
+use fastmail_provider::args::{
+    ACCOUNT_ARG, ID_MAX_CHARS, account_arg, keyword_arg, token, utc_date_arg,
+};
 use fastmail_provider::failure::{
     answer_body, derived_str, derived_u64, jmap_failure, missing_derived, optional, stored_args,
 };
@@ -173,8 +175,8 @@ impl SearchArgs {
                 to: text("to")?,
                 subject: text("subject")?,
                 in_mailbox: token(map, "mailbox")?,
-                after: date_arg(map, "after")?,
-                before: date_arg(map, "before")?,
+                after: utc_date_arg(map, "after")?,
+                before: utc_date_arg(map, "before")?,
                 has_keyword: keyword_arg(map, "keyword")?,
                 not_keyword: keyword_arg(map, "not_keyword")?,
                 has_attachment: match map.get("has_attachment") {
@@ -241,36 +243,6 @@ fn parse(tool: Provided, args: &Value) -> Result<Parsed, String> {
         account: account_arg(map)?,
         tool,
     })
-}
-
-/// A date argument as an RFC 8620 `UTCDate`.
-fn date_arg(args: &Args, key: &str) -> Result<Option<String>, String> {
-    let refusal =
-        || format!("`{key}` must be a date (2026-11-08) or a UTC instant (2026-11-08T10:00:00Z)");
-    match args.get(key) {
-        None => Ok(None),
-        Some(Value::String(text)) => utc_date(text).map(Some).ok_or_else(refusal),
-        Some(_) => Err(refusal()),
-    }
-}
-
-/// `text` in exactly `DATE_PATTERN`'s shape as a `UTCDate`: a date is its
-/// midnight. Field ranges are Fastmail's to check.
-fn utc_date(text: &str) -> Option<String> {
-    let fits = |shape: &[u8]| {
-        text.len() == shape.len()
-            && text.bytes().zip(shape).all(|(b, &s)| match s {
-                b'0' => b.is_ascii_digit(),
-                _ => b == s,
-            })
-    };
-    if fits(b"0000-00-00T00:00:00Z") {
-        Some(text.to_owned())
-    } else if fits(b"0000-00-00") {
-        Some(format!("{text}T00:00:00Z"))
-    } else {
-        None
-    }
 }
 
 /// Validate a request's arguments and ask for the session. An error is the
@@ -763,14 +735,14 @@ mod tests {
     use brenn_provider_kit::testutil::{Answered, MemoryHost, failure, http, nested, truncated};
     use brenn_provider_kit::{ApiCall, ErrorKind, Query};
     use brenn_provider_kit::{
-        Bound, CALL_BUDGET, Delivered, Input, Probes, ToolBounds, Unreadable, check, hold_probes,
+        Bound, CALL_BUDGET, Delivered, Input, ToolBounds, Unreadable, check, hold_probes,
         hold_required, input_schema, probes,
     };
     use fastmail_jmap::session::CORE;
     use fastmail_provider::failure::{CALLER_ERRORS, LIMIT_ERROR, SESSION_SETUP};
     use fastmail_provider::testutil::{
-        ACCOUNT_PATTERN, KEYWORD_PATTERN, account_probes, completed, incoming, jmap,
-        keyword_probes, row, session_body, settings,
+        ACCOUNT_PATTERN, DATE_PATTERN, KEYWORD_PATTERN, account_probes, completed, date_probes,
+        incoming, jmap, keyword_probes, row, session_body, settings,
     };
     use serde_json::Map;
 
@@ -802,22 +774,6 @@ mod tests {
             "mailbox_ids": ["m1"], "preview": "Shall we",
         })
     }
-
-    /// What `after` and `before` admit: a date, or a UTC instant to the
-    /// second. `utc_date` enforces exactly this; `DATE_PROBES` hold it there.
-    const DATE_PATTERN: &str = "^[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)?$";
-    const DATE_PROBES: (&[&str], &[&str]) = (
-        &["2026-11-08", "2026-11-08T10:00:00Z", "0001-01-01"],
-        &[
-            "2026-11-08T10:00:00+01:00",
-            "2026-11-08T10:00:00",
-            "2026-11-08T10:00:00.5Z",
-            "2026-11-8",
-            "20261108",
-            "yesterday",
-            "",
-        ],
-    );
 
     fn bounds(tool: Provided) -> ToolBounds<'static> {
         let (keys, required): (&'static [&'static str], &'static [&'static str]) = match tool {
@@ -880,15 +836,7 @@ mod tests {
     #[test]
     fn every_tools_schema_states_what_its_parser_enforces() {
         let spec = spec_text();
-        let dates = Probes {
-            admitted: DATE_PROBES.0.iter().map(|probe| json!(probe)).collect(),
-            refused: DATE_PROBES
-                .1
-                .iter()
-                .map(|probe| json!(probe))
-                .chain([json!(1)])
-                .collect(),
-        };
+        let dates = date_probes();
         for tool in Provided::ALL {
             let name = tool.name();
             let bounds = bounds(tool);
@@ -1016,7 +964,8 @@ mod tests {
             (call.api.method.as_str(), call.api.path.as_str()),
             ("POST", "/jmap/api")
         );
-        let body: Value = serde_json::from_str(call.api.body.as_deref().unwrap()).unwrap();
+        let body: Value =
+            serde_json::from_str(brenn_provider_kit::testutil::text_body(&call.api)).unwrap();
         assert_eq!(
             body,
             json!({
@@ -1051,7 +1000,8 @@ mod tests {
             let Next::Call { call, .. } = answered(&state, session_body()) else {
                 panic!("issues");
             };
-            let body: Value = serde_json::from_str(call.api.body.as_deref().unwrap()).unwrap();
+            let body: Value =
+                serde_json::from_str(brenn_provider_kit::testutil::text_body(&call.api)).unwrap();
             assert_eq!(body["methodCalls"][0][1]["filter"], filter);
         }
     }
@@ -1652,7 +1602,8 @@ mod tests {
         let newest = &ids[20..];
         assert_eq!(call.step, THREAD_EMAILS_STEP);
         assert_eq!(call.api.path, "/jmap/api");
-        let body: Value = serde_json::from_str(call.api.body.as_deref().unwrap()).unwrap();
+        let body: Value =
+            serde_json::from_str(brenn_provider_kit::testutil::text_body(&call.api)).unwrap();
         assert_eq!(
             body["methodCalls"],
             json!([["Email/get", { "accountId": "a1", "ids": newest,
@@ -1769,20 +1720,5 @@ mod tests {
         activate(requests, vec![]);
         assert_eq!(host.take_calls().len(), CALL_BUDGET);
         assert_eq!(host.rows(BACKLOG_NS).len(), 1);
-    }
-
-    #[test]
-    fn dates_take_exactly_the_patterns_shape() {
-        assert_eq!(
-            utc_date("2026-11-08").as_deref(),
-            Some("2026-11-08T00:00:00Z")
-        );
-        assert_eq!(
-            utc_date("2026-11-08T10:00:00Z").as_deref(),
-            Some("2026-11-08T10:00:00Z")
-        );
-        for refused in DATE_PROBES.1 {
-            assert_eq!(utc_date(refused), None, "{refused}");
-        }
     }
 }

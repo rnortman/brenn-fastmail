@@ -397,6 +397,9 @@ impl UpdateArgs {
         ACCOUNT_ARG,
     ];
 
+    // TODO(contacts-write-flat-arguments-limit-what-is-set): one entry per
+    // call, as flat scalars, because the kit's argument schema has no object
+    // type.
     fn parse(map: &Args) -> Result<UpdateArgs, String> {
         let id = token(map, "id")?.ok_or("`id` is required")?;
         let name = name_change(map)?;
@@ -553,6 +556,8 @@ fn entry_change(map: &Args) -> Result<Option<(EntryList, EntryChange)>, String> 
         country_code: country_code(map)?,
     };
     let key = token(map, "key")?;
+    // TODO(contact-update-entry-removal-unruled): whether an agent may remove
+    // a contact's entry, which cannot be undone, awaits the owner's ruling.
     let remove = flag(map, "remove")?;
     let change = match key {
         None if map.contains_key("remove") => return Err("`remove` requires `key`".to_owned()),
@@ -959,7 +964,7 @@ mod tests {
     }
 
     fn body(call: &Call) -> Value {
-        serde_json::from_str(call.api.body.as_deref().unwrap()).unwrap()
+        serde_json::from_str(brenn_provider_kit::testutil::text_body(&call.api)).unwrap()
     }
 
     /// A read's answer holding `card` at state `s7`.
@@ -2045,12 +2050,7 @@ mod tests {
         let calls = host.take_calls();
         assert_eq!(calls.len(), 1);
         assert!(
-            calls[0]
-                .call
-                .body
-                .as_deref()
-                .unwrap()
-                .contains("ContactCard/get")
+            brenn_provider_kit::testutil::text_body(&calls[0].call).contains("ContactCard/get")
         );
         activate(
             vec![],
@@ -2059,11 +2059,7 @@ mod tests {
         let calls = host.take_calls();
         assert_eq!(calls.len(), 1);
         assert!(
-            calls[0]
-                .call
-                .body
-                .as_deref()
-                .unwrap()
+            brenn_provider_kit::testutil::text_body(&calls[0].call)
                 .contains("\"ifInState\":\"s7\"")
         );
         activate(

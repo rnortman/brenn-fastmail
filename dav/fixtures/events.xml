@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+<D:response><D:href>/dav/calendars/user/alice@example.com/work/escaped.ics</D:href><D:propstat><D:prop><C:calendar-data>
+BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:escaped-1
+SUMMARY:Lunch &amp; &lt;talk&gt;
+DTSTART:20261102T120000Z
+END:VEVENT
+END:VCALENDAR
+</C:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>
+<D:response><D:href>/dav/calendars/user/alice@example.com/work/cdata.ics</D:href><D:propstat><D:prop><C:calendar-data><![CDATA[BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:cdata-1
+SUMMARY:Review <draft> & sign
+DTSTART:20261103T090000Z
+END:VEVENT
+END:VCALENDAR
+]]></C:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>
+</D:multistatus>

@@ -1,7 +1,7 @@
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 # The plumbing the components share: settings, argument readers, the session
-# step and failure mapping. One target serves the component cdylibs, built
+# step, the DAV call and failure mapping. One target serves the component cdylibs, built
 # for wasm32 through their platform transition, and the components' host
 # `logic_test`s alike, as brenn's provider kit does: two copies of a crate in
 # one graph do not typecheck against each other. `testutils` carries the
@@ -20,6 +20,7 @@ rust_library(
     edition = "2024",
     visibility = ["//visibility:public"],
     deps = [
+        "//dav:fastmail_dav",
         "//jmap:fastmail_jmap",
         "@brenn//brenn-provider-kit:brenn-provider-kit_guest",
         "@brenn//brenn-wasm/components/guest:serde",

@@ -29,12 +29,12 @@ use fastmail_jmap::{
 };
 use fastmail_provider::args::{ACCOUNT_ARG, account_arg, token};
 use fastmail_provider::failure::{answer_body, derived_str, jmap_failure, stored_args};
-use fastmail_provider::results::{in_order, page, the_one};
+use fastmail_provider::results::{cut_width, in_order, page, the_one};
 use fastmail_provider::settings::{API_NAME, Settings};
 use fastmail_provider::steps::{ACCOUNT_KEY, SESSION_STEP, after_session, session_call};
 use serde_json::{Value, json};
 
-use crate::card::{ID_MAX, NAME_MAX, TEXT_MAX, cut_width};
+use crate::card::{ID_MAX, NAME_MAX, TEXT_MAX};
 use crate::spec::Provided;
 
 /// The most characters a free-text search argument may hold.
@@ -533,7 +533,8 @@ mod tests {
             (call.api.method.as_str(), call.api.path.as_str()),
             ("POST", "/jmap/api")
         );
-        let body = serde_json::from_str(call.api.body.as_deref().unwrap()).unwrap();
+        let body =
+            serde_json::from_str(brenn_provider_kit::testutil::text_body(&call.api)).unwrap();
         (body, derived)
     }
 

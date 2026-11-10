@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <D:response>
+    <D:href>/dav/principals/user/alice@example.com/</D:href>
+    <D:propstat>
+      <D:prop>
+        <C:calendar-home-set>
+          <D:href>/dav/calendars/user/alice@example.com/</D:href>
+          <D:href>/dav/calendars/shared/alice@example.com/</D:href>
+        </C:calendar-home-set>
+      </D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+</D:multistatus>

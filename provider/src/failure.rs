@@ -109,16 +109,28 @@ pub fn step_answer<T: Tool>(
             "{API_NAME} answered HTTP {status} with no body, which JMAP never does"
         ))
         .into()),
-        Answer::Relay(_) => Err(internal(
-            "api-request answered with a credential relay, which an api_key_provider never sends",
-        )
+        Answer::Bytes { status, .. } => Err(internal(format!(
+            "{API_NAME} answered HTTP {status} with a body that is not text, which JMAP never does"
+        ))
         .into()),
+        Answer::Relay(_) => Err(internal(RELAY_REFUSAL).into()),
         Answer::Unreadable(why) => Err(why.failure(API_NAME, unreadable_hint).into()),
         Answer::Error { status, body } if (400..500).contains(&status) => {
             Err(StepFailure::Refused(http_failure(status, &body)))
         }
         Answer::Error { status, body } => Err(http_failure(status, &body).into()),
     }
+}
+
+/// The failure for an answer that is a credential relay.
+pub const RELAY_REFUSAL: &str =
+    "api-request answered with a credential relay, which an api_key_provider never sends";
+
+/// The failure for Fastmail's HTTP 429.
+pub fn rate_limited() -> Failure {
+    internal(format!(
+        "{API_NAME} is rate-limiting this deployment (HTTP 429); try again later"
+    ))
 }
 
 /// Fastmail's HTTP error as the request's failure. The body is read only as
@@ -131,9 +143,7 @@ pub fn http_failure(status: u64, body: &str) -> Failure {
             "{API_NAME} refused the token for this account (HTTP {status}): the operator \
              must replace its key file and restart Brenn"
         )),
-        429 => internal(format!(
-            "{API_NAME} is rate-limiting this deployment (HTTP 429); try again later"
-        )),
+        429 => rate_limited(),
         400..=499 => {
             let problem = serde_json::from_str::<Value>(body)
                 .ok()
@@ -300,7 +310,7 @@ pub fn optional(out: &mut Args, key: &str, value: &Option<String>, max_bytes: us
 
 #[cfg(test)]
 mod tests {
-    use brenn_provider_kit::testutil::{failure, http, nested};
+    use brenn_provider_kit::testutil::{binary, failure, http, nested};
 
     use super::*;
     use crate::steps::SESSION_STEP;
@@ -364,6 +374,18 @@ mod tests {
         )
         .unwrap_err();
         assert!(cut.detail.contains("ask for less"), "{}", cut.detail);
+    }
+
+    #[test]
+    fn a_body_that_is_not_text_is_internal() {
+        let state = row(json!({}));
+        assert_eq!(
+            answer_body(&state, binary(200, &[0xff, 0xfe]), None).unwrap_err(),
+            failure(
+                ErrorKind::Internal,
+                "Fastmail answered HTTP 200 with a body that is not text, which JMAP never does"
+            )
+        );
     }
 
     #[test]

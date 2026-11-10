@@ -896,7 +896,8 @@ mod tests {
             panic!("the lookup plans the write");
         };
         assert_eq!(call.step, DRAFT_SET_STEP);
-        let body: Value = serde_json::from_str(call.api.body.as_deref().unwrap()).unwrap();
+        let body: Value =
+            serde_json::from_str(brenn_provider_kit::testutil::text_body(&call.api)).unwrap();
         assert_eq!(body["using"], json!([CORE, MAIL]));
         assert_eq!(body["methodCalls"].as_array().unwrap().len(), 1);
         assert_eq!(body["methodCalls"][0][0], json!("Email/set"));
@@ -925,7 +926,8 @@ mod tests {
                 Value::Object(derived),
                 json!({ ACCOUNT_KEY: "a1", SUBMISSION_KEY: "a1" })
             );
-            serde_json::from_str::<Value>(call.api.body.as_deref().unwrap()).unwrap()
+            serde_json::from_str::<Value>(brenn_provider_kit::testutil::text_body(&call.api))
+                .unwrap()
         };
         let identities = json!(["Identity/get", { "accountId": "a1", "ids": null }, "c0"]);
         let drafts = json!(["Mailbox/query",
@@ -1684,7 +1686,8 @@ mod tests {
         let Next::Call { call, .. } = answered(&state, answer) else {
             panic!("the lookup plans the write");
         };
-        let body: Value = serde_json::from_str(call.api.body.as_deref().unwrap()).unwrap();
+        let body: Value =
+            serde_json::from_str(brenn_provider_kit::testutil::text_body(&call.api)).unwrap();
         let draft = &body["methodCalls"][0][1]["create"]["draft"];
         assert_eq!(
             draft["references"].as_array().unwrap().len(),
@@ -1724,14 +1727,7 @@ mod tests {
         activate(vec![], vec![deliver(&calls[0].call_id, session_body())]);
         let calls = host.take_calls();
         assert_eq!(calls.len(), 1);
-        assert!(
-            calls[0]
-                .call
-                .body
-                .as_deref()
-                .unwrap()
-                .contains("Identity/get")
-        );
+        assert!(brenn_provider_kit::testutil::text_body(&calls[0].call).contains("Identity/get"));
         let lookup = jmap(json!([
             ["Identity/get", { "accountId": "a1", "list": alice(), "notFound": [] }, "c0"],
             ["Mailbox/query", { "accountId": "a1", "ids": ["d1"], "position": 0 }, "c1"],
@@ -1739,7 +1735,7 @@ mod tests {
         activate(vec![], vec![deliver(&calls[0].call_id, lookup)]);
         let calls = host.take_calls();
         assert_eq!(calls.len(), 1);
-        assert!(calls[0].call.body.as_deref().unwrap().contains("Email/set"));
+        assert!(brenn_provider_kit::testutil::text_body(&calls[0].call).contains("Email/set"));
         activate(
             vec![],
             vec![deliver(

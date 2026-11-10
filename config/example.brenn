@@ -1,9 +1,10 @@
-// The document a deployer copies from: four Fastmail key providers, one
+// The document a deployer copies from: five Fastmail key providers, one
 // holding read-only mail tokens, one holding read-write mail tokens, one
-// holding read-only contacts tokens and one holding read-write contacts
-// tokens; the `fastmail-mail-read`, `fastmail-mail-write`, `fastmail-contacts`
-// and `fastmail-contacts-write` instances, each with the two clauses it calls
-// through on its own provider; and an agent granted the thirteen tools.
+// holding read-only contacts tokens, one holding read-write contacts tokens
+// and one holding calendar app passwords; the `fastmail-mail-read`,
+// `fastmail-mail-write`, `fastmail-contacts`, `fastmail-contacts-write` and
+// `fastmail-calendar` instances, each with the clauses it calls through on its
+// own provider; and an agent granted the sixteen tools.
 //
 // `example_fit` compiles it against the two module roots a host resolves it
 // from, this bundle's and brenn's; `config_check` lowers it with the verb an
@@ -13,6 +14,7 @@ use @fastmail-mail-read::*;
 use @fastmail-mail-write::*;
 use @fastmail-contacts::*;
 use @fastmail-contacts-write::*;
+use @fastmail-calendar::*;
 
 server {
   bind_address = "127.0.0.1:3000";
@@ -149,6 +151,27 @@ api_key_provider fastmail-contacts-write {
   }
 }
 
+/// The calendar component's app passwords. Each key file holds
+/// `Basic <base64 of address:app-password>`. The same accounts under the
+/// same names and with the same `default`.
+api_key_provider fastmail-calendar {
+  header = "Authorization";
+  api_hosts = ["https://caldav.fastmail.com"];
+  account alice {
+    user = "alice";
+    key_file = "/etc/brenn/fastmail-calendar/alice";
+    default = true;
+  }
+  account alice-work {
+    user = "alice";
+    key_file = "/etc/brenn/fastmail-calendar/alice-work";
+  }
+  account bob {
+    user = "bob";
+    key_file = "/etc/brenn/fastmail-calendar/bob";
+  }
+}
+
 // Each live request has one nested call outstanding: the class's summed
 // `max_concurrency` (12) results can arrive between two activations, twice
 // over if one is re-delivered, so `retain_depth` is at least 24, rounded up.
@@ -253,6 +276,38 @@ new fastmail_contacts_write: FastmailContactsWrite {
   };
 }
 
+// The calendar class's summed `max_concurrency` is 10, so 2 × 10 = 20 rounds
+// up to 32; the family default of 16 does not hold it.
+channel at "brenn:tool-results/fastmail_calendar" {
+  push_depth = 1;
+  retain_depth = 32;
+  standing_retain_depth = 32;
+  noise = alarm;
+}
+
+/// The calendar list asks for the credential's principal, then its calendar
+/// home, then the calendars in it; a window is one `REPORT` of a calendar
+/// and an event one `GET`. The clauses admit no writing method, whatever the
+/// app password can do, and hold the paths Fastmail's help pages give: a
+/// discovered path of another shape is refused naming the clause, and the
+/// fix is the clause.
+new fastmail_calendar: FastmailCalendar {
+  grants = [log, store, config, tools, provides];
+  store_path = "/var/lib/brenn/stores/fastmail_calendar";
+  tool api-request {
+    allow { provider = "fastmail-calendar"; method = "PROPFIND"; host = "caldav.fastmail.com"; path = "/dav/principals/"; }
+    allow { provider = "fastmail-calendar"; method = "PROPFIND"; host = "caldav.fastmail.com"; path = "/dav/principals/user/*/"; }
+    allow { provider = "fastmail-calendar"; method = "PROPFIND"; host = "caldav.fastmail.com"; path = "/dav/calendars/user/*/"; }
+    allow { provider = "fastmail-calendar"; method = "REPORT";   host = "caldav.fastmail.com"; path = "/dav/calendars/user/*/*/"; }
+    allow { provider = "fastmail-calendar"; method = "GET";      host = "caldav.fastmail.com"; path = "/dav/calendars/user/*/*/*"; }
+    rate_limit { burst = 20; sustained_per_minute = 60; }
+  }
+  config = {
+    provider = "fastmail-calendar",
+    host = "caldav.fastmail.com"
+  };
+}
+
 agent Assistant() {
   working_dir = ".";
   container = "sandbox";
@@ -270,6 +325,9 @@ agent Assistant() {
   tool fastmail-contact-read {}
   tool fastmail-contact-create {}
   tool fastmail-contact-update {}
+  tool fastmail-calendars {}
+  tool fastmail-calendar-events {}
+  tool fastmail-calendar-event {}
 }
 
 new assistant: Assistant();

@@ -628,7 +628,7 @@ mod tests {
             panic!("{tool:?}: the session step issues the request");
         };
         assert_eq!(call.step, API_STEP);
-        serde_json::from_str(call.api.body.as_deref().unwrap()).unwrap()
+        serde_json::from_str(brenn_provider_kit::testutil::text_body(&call.api)).unwrap()
     }
 
     /// A one-method JMAP answer: `name`'s `args` as call `c0`.

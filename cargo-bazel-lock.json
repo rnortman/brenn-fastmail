@@ -1,6 +1,26 @@
 {
-  "checksum": "c49f3fda553255ad8c4237e4f6a46c8b2696bed6517af6af2238b50bfdc44864",
+  "checksum": "bd549da0148ae0cf22955bc90a785ead5e45d59f006e7667aacd69821f6f3c2d",
   "crates": {
+    "fastmail-calendar 0.2.0": {
+      "name": "fastmail-calendar",
+      "version": "0.2.0",
+      "package_url": null,
+      "repository": null,
+      "targets": [],
+      "library_target_name": null,
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "edition": "2024",
+        "version": "0.2.0"
+      },
+      "license": "Apache-2.0",
+      "license_ids": [
+        "Apache-2.0"
+      ],
+      "license_file": null
+    },
     "fastmail-contacts 0.2.0": {
       "name": "fastmail-contacts",
       "version": "0.2.0",
@@ -32,6 +52,48 @@
         "compile_data_glob": [
           "**"
         ],
+        "edition": "2024",
+        "version": "0.2.0"
+      },
+      "license": "Apache-2.0",
+      "license_ids": [
+        "Apache-2.0"
+      ],
+      "license_file": null
+    },
+    "fastmail-dav 0.2.0": {
+      "name": "fastmail-dav",
+      "version": "0.2.0",
+      "package_url": null,
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "fastmail_dav",
+            "crate_root": "src/lib.rs",
+            "srcs": {
+              "allow_empty": true,
+              "include": [
+                "**/*.rs"
+              ]
+            }
+          }
+        }
+      ],
+      "library_target_name": "fastmail_dav",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "deps": {
+          "common": [
+            {
+              "id": "roxmltree 0.21.2",
+              "target": "roxmltree"
+            }
+          ],
+          "selects": {}
+        },
         "edition": "2024",
         "version": "0.2.0"
       },
@@ -146,12 +208,114 @@
         "Apache-2.0"
       ],
       "license_file": null
+    },
+    "memchr 2.8.3": {
+      "name": "memchr",
+      "version": "2.8.3",
+      "package_url": "https://github.com/BurntSushi/memchr",
+      "repository": {
+        "Http": {
+          "url": "https://static.crates.io/crates/memchr/2.8.3/download",
+          "sha256": "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "memchr",
+            "crate_root": "src/lib.rs",
+            "srcs": {
+              "allow_empty": true,
+              "include": [
+                "**/*.rs"
+              ]
+            }
+          }
+        }
+      ],
+      "library_target_name": "memchr",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "crate_features": {
+          "common": [
+            "alloc",
+            "std"
+          ],
+          "selects": {}
+        },
+        "edition": "2021",
+        "version": "2.8.3"
+      },
+      "license": "Unlicense OR MIT",
+      "license_ids": [
+        "MIT",
+        "Unlicense"
+      ],
+      "license_file": "LICENSE-MIT"
+    },
+    "roxmltree 0.21.2": {
+      "name": "roxmltree",
+      "version": "0.21.2",
+      "package_url": "https://github.com/RazrFalcon/roxmltree",
+      "repository": {
+        "Http": {
+          "url": "https://static.crates.io/crates/roxmltree/0.21.2/download",
+          "sha256": "9da7f59328b09405b181fee1018925fad50f157afb43c0c0f5c522c256dd5907"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "roxmltree",
+            "crate_root": "src/lib.rs",
+            "srcs": {
+              "allow_empty": true,
+              "include": [
+                "**/*.rs"
+              ]
+            }
+          }
+        }
+      ],
+      "library_target_name": "roxmltree",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "crate_features": {
+          "common": [
+            "std"
+          ],
+          "selects": {}
+        },
+        "deps": {
+          "common": [
+            {
+              "id": "memchr 2.8.3",
+              "target": "memchr"
+            }
+          ],
+          "selects": {}
+        },
+        "edition": "2021",
+        "version": "0.21.2"
+      },
+      "license": "MIT OR Apache-2.0",
+      "license_ids": [
+        "Apache-2.0",
+        "MIT"
+      ],
+      "license_file": "LICENSE-APACHE"
     }
   },
   "binary_crates": [],
   "workspace_members": {
+    "fastmail-calendar 0.2.0": "fastmail-calendar",
     "fastmail-contacts 0.2.0": "fastmail-contacts",
     "fastmail-contacts-write 0.2.0": "fastmail-contacts-write",
+    "fastmail-dav 0.2.0": "dav",
     "fastmail-jmap 0.2.0": "jmap",
     "fastmail-mail-read 0.2.0": "fastmail-mail-read",
     "fastmail-mail-write 0.2.0": "fastmail-mail-write",
@@ -165,7 +329,9 @@
       "x86_64-unknown-linux-gnu"
     ]
   },
-  "direct_deps": [],
+  "direct_deps": [
+    "roxmltree 0.21.2"
+  ],
   "direct_dev_deps": [],
   "unused_patches": []
 }
