@@ -790,28 +790,31 @@ mod tests {
                     { "kind": "given", "value": "John" }, { "kind": "surname", "value": "Public" },
                     { "kind": "generation", "value": "Esq." },
                 ],
-                "nicknames": ["Johnny"],
-                "organizations": [{ "units": ["Volunteers"] },
-                                  { "name": "ABC, Inc.", "units": ["Marketing"] }],
+                "nicknames": [{ "key": "k1", "name": "Johnny" }],
+                "organizations": [{ "key": "o1", "units": ["Volunteers"] },
+                                  { "key": "o2", "name": "ABC, Inc.", "units": ["Marketing"] }],
                 "titles": [
-                    { "name": "Project Leader", "kind": "title", "organization": "ABC, Inc." },
-                    { "name": "Treasurer", "kind": "role" },
+                    { "key": "t1", "name": "Project Leader", "kind": "title",
+                      "organization": "ABC, Inc." },
+                    { "key": "t2", "name": "Treasurer", "kind": "role" },
                 ],
-                "emails": [{ "address": "alice@example.com", "contexts": ["private"],
-                             "label": "home", "pref": 1 }],
-                "phones": [{ "number": "tel:+1-555-0100", "features": ["text", "voice"] }],
-                "online_services": [{ "service": "Mastodon", "user": "@alice@example.com",
+                "emails": [{ "key": "e1", "address": "alice@example.com",
+                             "contexts": ["private"], "label": "home", "pref": 1 }],
+                "phones": [{ "key": "p1", "number": "tel:+1-555-0100",
+                             "features": ["text", "voice"] }],
+                "online_services": [{ "key": "s1", "service": "Mastodon",
+                                      "user": "@alice@example.com",
                                       "uri": "https://example.com/@alice" }],
-                "addresses": [{ "text": "54321 Oak St", "country_code": "US",
+                "addresses": [{ "key": "a1", "text": "54321 Oak St", "country_code": "US",
                                 "contexts": ["work"] }],
                 "anniversaries": [
-                    { "kind": "birth", "date": "1953-04-15" },
-                    { "kind": "death", "date": "2019-10-15T23:10:00Z" },
-                    { "kind": "wedding", "date": "--06-21" },
-                    { "kind": "x-graduation", "date": "1975" },
-                    { "kind": "x-hire", "date": "2001-09" },
+                    { "key": "d1", "kind": "birth", "date": "1953-04-15" },
+                    { "key": "d2", "kind": "death", "date": "2019-10-15T23:10:00Z" },
+                    { "key": "d3", "kind": "wedding", "date": "--06-21" },
+                    { "key": "d4", "kind": "x-graduation", "date": "1975" },
+                    { "key": "d5", "kind": "x-hire", "date": "2001-09" },
                 ],
-                "notes": [{ "note": "Prefers \"JQ\".\nCall after 10.",
+                "notes": [{ "key": "n1", "note": "Prefers \"JQ\".\nCall after 10.",
                             "created": "2022-11-23T15:01:32Z", "truncated": false }],
                 "address_book_ids": ["b1"],
             })
@@ -902,8 +905,26 @@ mod tests {
         assert_eq!(result["phones"][0]["features_omitted"], json!(1));
         assert_eq!(
             result["notes"][0],
-            json!({ "note": format!("{}…", "x".repeat(4000)), "truncated": true })
+            json!({ "key": "k000", "note": format!("{}…", "x".repeat(4000)),
+                    "truncated": true })
         );
+    }
+
+    #[test]
+    fn an_entry_key_too_wide_to_show_whole_is_left_out_and_the_entry_shown() {
+        let fits = "k".repeat(crate::card::ID_MAX);
+        let over = "o".repeat(crate::card::ID_MAX + 1);
+        let card = json!({ "id": "c1",
+            "emails": { fits.clone(): { "address": "alice@example.com", "pref": 1 },
+                        over.clone(): { "address": "bob@example.com", "pref": 2 } },
+            "nicknames": { over: { "name": "Al" } } });
+        let result = completed(read_of(card));
+        assert_eq!(
+            result["emails"],
+            json!([{ "key": fits, "address": "alice@example.com", "pref": 1 },
+                   { "address": "bob@example.com", "pref": 2 }])
+        );
+        assert_eq!(result["nicknames"], json!([{ "name": "Al" }]));
     }
 
     #[test]
@@ -927,8 +948,9 @@ mod tests {
 
     /// A card with every list over its cap and every string over its bound,
     /// each string `fill` repeated: a note one character past the note bound,
-    /// every other string one past the widest other bound, except the member
-    /// uids, 101 as wide as a shown uid can be and one past it.
+    /// every other string one past the widest other bound, except the entry
+    /// keys, as wide as a shown key can be, and the member uids, 101 as wide
+    /// as a shown uid can be and one past it.
     fn worst_card(id: &str, fill: char) -> Value {
         let note: String = std::iter::repeat_n(fill, crate::card::NOTE_MAX + 1).collect();
         let long: String = std::iter::repeat_n(fill, TEXT_MAX + 1).collect();
@@ -940,12 +962,9 @@ mod tests {
                 .map(|i| (format!("{long}{i}"), json!(true)))
                 .collect(),
         );
+        let key = |i: usize| format!("{i:03}{uid}");
         let map = |n: usize, entry: Value| -> Value {
-            Value::Object(
-                (0..n)
-                    .map(|i| (format!("k{i:03}"), entry.clone()))
-                    .collect(),
-            )
+            Value::Object((0..n).map(|i| (key(i), entry.clone())).collect())
         };
         let components: Vec<Value> = (0..21)
             .map(|_| json!({ "kind": long, "value": long }))
@@ -956,7 +975,7 @@ mod tests {
             "nicknames": map(11, json!({ "name": s() })),
             "organizations": map(11, json!({ "name": s(),
                 "units": (0..6).map(|_| json!({ "name": long })).collect::<Vec<_>>() })),
-            "titles": map(11, json!({ "name": s(), "kind": s(), "organizationId": "k000" })),
+            "titles": map(11, json!({ "name": s(), "kind": s(), "organizationId": key(0) })),
             "emails": map(21, json!({ "address": s(), "contexts": set, "label": s(),
                                        "pref": 1 })),
             "phones": map(21, json!({ "number": s(), "features": set, "contexts": set,

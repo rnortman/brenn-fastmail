@@ -12,7 +12,7 @@ use serde_json::{Map, Value, json};
 use crate::error::Error;
 use crate::method::{Fields, GetResult, Ids, Sort, read_get};
 use crate::request::{CallId, Request};
-use crate::set::{Patch, SetResult};
+use crate::set::{Patch, SetResult, set_args};
 
 /// The properties `Mailbox/get` asks for; `Mailbox::list` reads these.
 pub const MAILBOX_PROPERTIES: &[&str] = &[
@@ -538,6 +538,7 @@ impl EmailSet<'_> {
                 .iter()
                 .map(|(cid, email)| (cid.clone(), email.to_value())),
             &self.update,
+            None,
         )
     }
 
@@ -627,6 +628,7 @@ impl MailboxSet<'_> {
                 .iter()
                 .map(|(cid, mailbox)| (cid.clone(), mailbox.to_value())),
             &self.update,
+            None,
         )
     }
 
@@ -705,29 +707,6 @@ fn true_set(ids: &[String]) -> Value {
             .map(|id| (id.clone(), Value::Bool(true)))
             .collect(),
     )
-}
-
-/// The arguments of a `/set` with creates and updates, each map present only
-/// when non-empty.
-fn set_args(
-    account_id: &str,
-    create: impl Iterator<Item = (String, Value)>,
-    update: &[(String, Patch)],
-) -> Value {
-    let mut args = Map::new();
-    args.insert("accountId".into(), json!(account_id));
-    let create: Map<String, Value> = create.collect();
-    if !create.is_empty() {
-        args.insert("create".into(), Value::Object(create));
-    }
-    if !update.is_empty() {
-        let update: Map<String, Value> = update
-            .iter()
-            .map(|(id, patch)| (id.clone(), patch.to_value()))
-            .collect();
-        args.insert("update".into(), Value::Object(update));
-    }
-    Value::Object(args)
 }
 
 #[cfg(test)]

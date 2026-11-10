@@ -3,7 +3,7 @@
 
 use std::collections::BTreeSet;
 
-use brenn_provider_kit::Args;
+use brenn_provider_kit::{Args, capped};
 use serde_json::Value;
 
 /// The argument every tool takes beside its own.
@@ -86,37 +86,95 @@ pub fn keyword_arg(args: &Args, key: &str) -> Result<Option<String>, String> {
     }
 }
 
+/// An argument that is 1 to `max` distinct items, each as `item` reads it;
+/// absent is `None`. Refusals say "`key` must be an array of 1 to `max`"
+/// `what`, give `item`'s refusal, or say that `key` names an item twice.
+pub fn distinct_list(
+    args: &Args,
+    key: &str,
+    max: usize,
+    what: &str,
+    item: impl Fn(&Value) -> Result<String, String>,
+) -> Result<Option<Vec<String>>, String> {
+    let Some(value) = args.get(key) else {
+        return Ok(None);
+    };
+    let items = match value {
+        Value::Array(items) if (1..=max).contains(&items.len()) => items,
+        _ => return Err(format!("`{key}` must be an array of 1 to {max} {what}")),
+    };
+    let mut out: Vec<String> = Vec::with_capacity(items.len());
+    let mut seen = BTreeSet::new();
+    for value in items {
+        let read = item(value)?;
+        if !seen.insert(read.clone()) {
+            return Err(format!("`{key}` names {read:?} twice"));
+        }
+        out.push(read);
+    }
+    Ok(Some(out))
+}
+
 /// An argument that is 1 to `max` distinct JMAP ids, each as [`token`]
-/// admits it; absent is `None`. Refusals say "`key` must be an array of 1 to
-/// `max`" `what`, that each of `key` must be an id, or that it names an id
-/// twice.
+/// admits it, as [`distinct_list`] reads it; each refusal of an item says
+/// that each of `key` must be an id.
 pub fn id_list(
     args: &Args,
     key: &str,
     max: usize,
     what: &str,
 ) -> Result<Option<Vec<String>>, String> {
-    let Some(value) = args.get(key) else {
-        return Ok(None);
-    };
-    let ids = match value {
-        Value::Array(ids) if (1..=max).contains(&ids.len()) => ids,
-        _ => return Err(format!("`{key}` must be an array of 1 to {max} {what}")),
-    };
-    let mut out: Vec<String> = Vec::with_capacity(ids.len());
-    let mut seen = BTreeSet::new();
-    for id in ids {
-        match id {
-            Value::String(id) if is_token(id) => {
-                if !seen.insert(id.as_str()) {
-                    return Err(format!("`{key}` names {id:?} twice"));
-                }
-                out.push(id.clone());
-            }
-            _ => return Err(format!("each of `{key}` must be {}", token_rule())),
+    distinct_list(args, key, max, what, |id| match id {
+        Value::String(id) if is_token(id) => Ok(id.clone()),
+        _ => Err(format!("each of `{key}` must be {}", token_rule())),
+    })
+}
+
+/// Whether a text may hold line breaks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lines {
+    One,
+    Many,
+}
+
+/// Refuses a control character in `text`, named `what` in the caller's
+/// terms, but, for `Lines::Many`, a line break (`\n`, `\r`).
+fn hold_lines(what: &str, text: &str, lines: Lines) -> Result<(), String> {
+    let line_break = |c: char| lines == Lines::Many && (c == '\n' || c == '\r');
+    if text.chars().any(|c| c.is_control() && !line_break(c)) {
+        return Err(match lines {
+            Lines::One => format!("{what} must not hold a control character"),
+            Lines::Many => format!("{what} must not hold a control character but a line break"),
+        });
+    }
+    Ok(())
+}
+
+/// `text`, named `what` in the caller's terms, held as [`one_line`] holds an
+/// argument, line breaks admitted for `Lines::Many`: at most `max_chars`
+/// characters, not empty or whitespace only, with no other control
+/// character. For a text that is not an argument of its own, such as an
+/// array's item; the length and emptiness refusals word `capped`'s.
+pub fn held_text(what: &str, text: &str, max_chars: usize, lines: Lines) -> Result<(), String> {
+    if text.chars().count() > max_chars {
+        return Err(format!("{what} is longer than {max_chars} characters"));
+    }
+    if text.trim().is_empty() {
+        return Err(format!("{what} is empty"));
+    }
+    hold_lines(what, text, lines)
+}
+
+/// A one-line text argument at `key`: as `capped` admits it at `max_chars`,
+/// with no control character.
+pub fn one_line(args: &Args, key: &str, max_chars: usize) -> Result<Option<String>, String> {
+    match capped(args, key, max_chars)? {
+        None => Ok(None),
+        Some(text) => {
+            hold_lines(&format!("`{key}`"), text, Lines::One)?;
+            Ok(Some(text.to_owned()))
         }
     }
-    Ok(Some(out))
 }
 
 /// The bytes `text` takes once escaped as a JSON string twice — inside a
@@ -192,6 +250,91 @@ mod tests {
             list(json!(["a", "b", "a"])),
             Err("`ids` names \"a\" twice".to_owned())
         );
+    }
+
+    #[test]
+    fn a_one_line_text_is_capped_and_holds_no_control_character() {
+        let line = |value: Value| one_line(&map(json!({ "name": value })), "name", 5);
+        assert_eq!(one_line(&map(json!({})), "name", 5), Ok(None));
+        assert_eq!(line(json!("Alice")), Ok(Some("Alice".to_owned())));
+        assert_eq!(line(json!("é😀 ab")), Ok(Some("é😀 ab".to_owned())));
+        assert_eq!(
+            line(json!("Alice!")),
+            Err("`name` is longer than 5 characters".to_owned())
+        );
+        assert_eq!(line(json!(" ")), Err("`name` is empty".to_owned()));
+        assert_eq!(line(json!(7)), Err("`name` must be a string".to_owned()));
+        for refused in ["a\nb", "a\tb", "a\rb", "a\u{1}b", "a\u{7f}b", "a\u{85}b"] {
+            assert_eq!(
+                line(json!(refused)),
+                Err("`name` must not hold a control character".to_owned()),
+                "{refused:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_distinct_list_reads_each_item_and_refuses_a_repeat() {
+        let list = |value: Value| {
+            distinct_list(
+                &map(json!({ "xs": value })),
+                "xs",
+                2,
+                "small numbers",
+                |item| {
+                    item.as_u64()
+                        .filter(|n| *n < 10)
+                        .map(|n| n.to_string())
+                        .ok_or_else(|| "each of `xs` must be a small number".to_owned())
+                },
+            )
+        };
+        assert_eq!(
+            list(json!([1, 2])),
+            Ok(Some(vec!["1".to_owned(), "2".to_owned()]))
+        );
+        for refused in [json!([]), json!([1, 2, 3]), json!(1)] {
+            assert_eq!(
+                list(refused),
+                Err("`xs` must be an array of 1 to 2 small numbers".to_owned())
+            );
+        }
+        assert_eq!(
+            list(json!([1, 10])),
+            Err("each of `xs` must be a small number".to_owned())
+        );
+        assert_eq!(
+            list(json!([3, 3])),
+            Err("`xs` names \"3\" twice".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_held_text_is_capped_not_blank_and_holds_line_breaks_only_when_allowed() {
+        let held = |text: &str, lines| held_text("each of `xs`", text, 5, lines);
+        for lines in [Lines::One, Lines::Many] {
+            assert_eq!(held("Alice", lines), Ok(()));
+            assert_eq!(
+                held("Alice!", lines),
+                Err("each of `xs` is longer than 5 characters".to_owned())
+            );
+            assert_eq!(held(" \n", lines), Err("each of `xs` is empty".to_owned()));
+        }
+        assert_eq!(held("a\r\nb", Lines::Many), Ok(()));
+        for refused in ["a\nb", "a\tb", "a\u{1}b"] {
+            assert_eq!(
+                held(refused, Lines::One),
+                Err("each of `xs` must not hold a control character".to_owned()),
+                "{refused:?}"
+            );
+        }
+        for refused in ["a\tb", "a\u{1}b", "a\u{85}b"] {
+            assert_eq!(
+                held(refused, Lines::Many),
+                Err("each of `xs` must not hold a control character but a line break".to_owned()),
+                "{refused:?}"
+            );
+        }
     }
 
     #[test]

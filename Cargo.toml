@@ -7,7 +7,7 @@
 # (`@brenn//brenn-wasm/components/guest:{serde,serde_json}`); a derive from any
 # other instance satisfies none of brenn-guest's port bounds.
 [workspace]
-members = ["fastmail-contacts", "fastmail-mail-read", "fastmail-mail-write", "jmap", "provider"]
+members = ["fastmail-contacts", "fastmail-contacts-write", "fastmail-mail-read", "fastmail-mail-write", "jmap", "provider"]
 resolver = "3"
 
 # Inherited by every member. Declared even though nothing here is published:

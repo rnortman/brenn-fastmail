@@ -16,9 +16,10 @@ pub mod session;
 pub mod set;
 
 pub use contacts::{
-    AddressBook, AddressBookGet, Anniversary, AnniversaryDate, CardEmail, CardFilter, CardName,
-    Component, ContactCard, ContactCardGet, ContactCardQuery, Note, OnlineService, Organization,
-    Phone, PostalAddress, Title,
+    AddressBook, AddressBookGet, Anniversary, AnniversaryDate, CardCreated, CardEmail, CardFilter,
+    CardKeys, CardName, Component, ContactCard, ContactCardGet, ContactCardQuery, ContactCardSet,
+    EntryChange, EntryFields, EntryList, EntryValue, NameChange, NameRefusal, NameState, NewCard,
+    Nickname, Note, OnlineService, Organization, Phone, PostalAddress, Title,
 };
 pub use error::{Error, RequestError};
 pub use mail::{

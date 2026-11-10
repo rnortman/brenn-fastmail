@@ -7,7 +7,7 @@ RFC 8621, RFC 9610) through Brenn's `api-request` tool. Each user's API token li
 a key file the operator places, bound to that user, and never reaches a
 component: an agent reads the Fastmail account of the user it is serving.
 
-The repository holds three components. `fastmail-mail-read` gives an agent four
+The repository holds four components. `fastmail-mail-read` gives an agent four
 read-only tools: `FastmailMailboxes` (the account's mailboxes),
 `FastmailSearch` (messages by sender, recipient, subject, text, mailbox, date
 or keyword), `FastmailRead` (one message's headers and text, attachments
@@ -24,22 +24,30 @@ three read-only tools over the account's contacts: `FastmailAddressBooks`
 name, email, phone, organization, address book, uid or kind) and
 `FastmailContactRead` (one contact in full: names, organizations and titles,
 emails, phones, online services, addresses, anniversaries, notes and a
-group's members). Nothing it does writes to the account. All three are built
+group's members, each entry with the `key` an update names it by). Nothing it
+does writes to the account. `fastmail-contacts-write` gives an agent two
+tools that change contacts: `FastmailContactCreate` (a new contact in one
+address book, with its name and bare lists of emails, phones and the rest)
+and `FastmailContactUpdate` (the name, the address books, and one entry per
+call added, changed or removed, keeping everything the call does not name).
+Nothing it does deletes a contact or writes an address book. All four are built
 on `fastmail-jmap`, a transport-free JMAP crate: the session object, the
 request envelope with result references, method responses read by call id,
 the mail methods the tools use (`Mailbox/get`, `Mailbox/query`,
 `Mailbox/set`, `Email/query`, `Email/get`, `Email/set`, `Thread/get`,
 `Identity/get`) and the contacts methods (`AddressBook/get`,
-`ContactCard/query`, `ContactCard/get`), whose cards are JSContact
-(RFC 9553).
+`ContactCard/query`, `ContactCard/get`, `ContactCard/set`), whose cards are
+JSContact (RFC 9553).
 
 ## Status
 
-Three components: `fastmail-mail-read`, with four read-only tools;
+Four components: `fastmail-mail-read`, with four read-only tools;
 `fastmail-mail-write`, which organizes messages and mailboxes and saves
-drafts; and `fastmail-contacts`, with three read-only tools over contacts
-(`FastmailAddressBooks`, `FastmailContactSearch`, `FastmailContactRead`).
-Contacts are read, never written. Nothing here sends mail, there is no Sieve support, and attachments
+drafts; `fastmail-contacts`, with three read-only tools over contacts
+(`FastmailAddressBooks`, `FastmailContactSearch`, `FastmailContactRead`); and
+`fastmail-contacts-write`, which creates and updates contacts
+(`FastmailContactCreate`, `FastmailContactUpdate`). A contact is never
+deleted, and an address book never written. Nothing here sends mail, there is no Sieve support, and attachments
 are listed, not fetched. A draft is created, never edited in place or
 destroyed. Releases are tagged `v<version>`; `CHANGELOG.md` lists them. The
 tree is built and tested against a pinned brenn commit; no test reaches
@@ -73,7 +81,11 @@ operator's to run.
    provider, `fastmail-contacts`, which only the contacts instance names. A
    single read-only token per account scoped for both mail and contacts, in
    one provider that both read instances name, also works; keeping them
-   apart is the deployer's choice.
+   apart is the deployer's choice. For the contacts write component, each
+   user creates a fourth token per account with read-write access to
+   contacts; it goes in a fourth key provider, `fastmail-contacts-write`,
+   which only the contacts write instance names, so the contacts read
+   instance's tokens cannot change a contact.
 2. Write one file per account: `Bearer <token>` — the word, one space, the
    token, nothing else — in a file owned by the user brenn runs as, mode
    `0600`. Brenn sends the
@@ -98,10 +110,12 @@ operator's to run.
    without it `FastmailDraft` refuses every draft. That capability also lets
    the token send mail as the user, and any read-write token can destroy
    messages: that the write component sends and destroys nothing rests on its
-   code alone, not on the token. For a contacts token, `primaryAccounts` must
-   name an account for `urn:ietf:params:jmap:contacts`, which the
-   capabilities list; it need not list mail. Note that account id for
-   step 5.
+   code alone, not on the token. For a contacts token, read-only or
+   read-write, `primaryAccounts` must name an account for
+   `urn:ietf:params:jmap:contacts`, which the capabilities list; it need not
+   list mail. A contacts read-write token can also delete contacts and write
+   address books: that the contacts write component does neither rests on its
+   code alone, not on the token. Note that account id for steps 5 and 6.
 4. Confirm the API path, which the component sends without a trailing slash:
 
    ```
@@ -136,13 +150,137 @@ operator's to run.
    server; `unknownMethod` means Fastmail does not serve the method under
    RFC 9610's name, and no contacts tool will work. Either is worth
    reporting against this repository.
+6. For each contacts read-write file, run in the same sitting as step 5 the
+   requests `fastmail-contacts-write` sends, against a scratch contact the
+   check creates and then deletes. Define a helper, with the file and the
+   contacts account id from step 3:
+
+   ```
+   jmap() {
+     curl -s -X POST \
+       -H @<(printf 'Authorization: %s\n' "$(cat <file>)") \
+       -H 'Content-Type: application/json' \
+       --data "{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:ietf:params:jmap:contacts\"],
+         \"methodCalls\":[$1]}" \
+       https://api.fastmail.com/jmap/api | jq '.methodResponses'
+   }
+   ```
+
+   (a) Find the default address book's id, the one with `isDefault: true`:
+
+   ```
+   jmap '["AddressBook/get",{"accountId":"<account id>","ids":null},"c0"]'
+   ```
+
+   (b) Create the scratch contact as `FastmailContactCreate` does, with a
+   `uid`, a name and one email at key `k1`:
+
+   ```
+   jmap '["ContactCard/set",{"accountId":"<account id>","create":{"contact":{
+     "@type":"Card","version":"1.0",
+     "uid":"urn:uuid:0f8fad5b-d9cb-469f-a165-70867728950e",
+     "addressBookIds":{"<book id>":true},
+     "name":{"full":"Scratch Example","components":[
+       {"kind":"given","value":"Scratch"},{"kind":"surname","value":"Example"}]},
+     "emails":{"k1":{"address":"scratch@example.com"}}}}},"c0"]'
+   ```
+
+   Note the `id` under `created.contact`.
+
+   (c) Read it back:
+
+   ```
+   jmap '["ContactCard/get",{"accountId":"<account id>","ids":["<contact id>"]},"c0"]'
+   ```
+
+   Note the answer's `state`, the keys under `emails`, the `uid` and the
+   whole `name` object.
+
+   (d) Update it as `FastmailContactUpdate` does, under that `state`: an
+   edit of the email, a name change, a first phone and a first address
+   written as full text. `<email key>` is the key under `emails` that (c)
+   showed:
+
+   ```
+   jmap '["ContactCard/set",{"accountId":"<account id>","ifInState":"<state>",
+     "update":{"<contact id>":{
+       "emails/<email key>/address":"scratch2@example.com",
+       "name/full":"Scratch Sample",
+       "name/components":[{"kind":"given","value":"Scratch"},{"kind":"surname","value":"Sample"}],
+       "phones":{"k1":{"number":"+1 555 0100"}},
+       "addresses":{"k1":{"full":"1 Example Street\nExample City"}}}}},"c0"]'
+   ```
+
+   (e) Read it back again, as in (c), and note its `state`.
+
+   Each of (f), (g) and (h) sends one path, so a refusal names its path.
+   Send each under the `state` before it: (f) under (e)'s, (g) and (h) under
+   the `newState` of the answer before. A refused update leaves the contact
+   as it was; carry on with its `newState`.
+
+   (f) Add a second email, as an add to a list the card holds does.
+   `<new key>` is `k<n>` for the smallest `n` that (e) showed no key under
+   `emails` for (`k2` when it showed only `k1`):
+
+   ```
+   jmap '["ContactCard/set",{"accountId":"<account id>","ifInState":"<state>",
+     "update":{"<contact id>":{
+       "emails/<new key>":{"address":"scratch3@example.com"}}}},"c0"]'
+   ```
+
+   (g) Set an address-book flag. `<flag book id>` is another book's id from
+   (a) when there is one, else `<book id>`, which the contact is already in:
+
+   ```
+   jmap '["ContactCard/set",{"accountId":"<account id>","ifInState":"<newState>",
+     "update":{"<contact id>":{
+       "addressBookIds/<flag book id>":true}}},"c0"]'
+   ```
+
+   (h) Remove the first email, as a remove does:
+
+   ```
+   jmap '["ContactCard/set",{"accountId":"<account id>","ifInState":"<newState>",
+     "update":{"<contact id>":{
+       "emails/<email key>":null}}},"c0"]'
+   ```
+
+   (i) Read it back again, as in (c). If (g) named another book, remove the
+   contact from it under (i)'s `state`, as removing a book does, and read it
+   back once more:
+
+   ```
+   jmap '["ContactCard/set",{"accountId":"<account id>","ifInState":"<state>",
+     "update":{"<contact id>":{
+       "addressBookIds/<flag book id>":null}}},"c0"]'
+   ```
+
+   (j) Open the contact in Fastmail's own contacts editor and look at its
+   name, emails, phone and address. (k) Delete it there.
+
+   Record, for a report against this repository: any `error`, or any
+   `notCreated` or `notUpdated` type with its `description`, naming the step;
+   whether the keys sent (`k1`, `<new key>`) are the keys Fastmail holds;
+   whether the `uid` sent is the `uid` it holds; the `name` object it holds
+   after (b) and after (d), whole (which of `full`, `components`, `isOrdered`
+   and `sortAs` it keeps or adds); whether, after (i), `emails` holds
+   `<new key>` and no longer `<email key>`, and `addressBookIds` holds
+   `<flag book id>`; whether the last read shows that book gone; and whether
+   the name and the full-text address show in Fastmail's editor. A refusal
+   of (d) says one of its five paths is refused, not which, and leaves the
+   other four unanswered: report its `description` whole. When (g) had no
+   other book to name, record that the `null` form of an address-book path
+   went untried. An answer naming `stateMismatch` means another client
+   changed a contact since the `state` sent: read it as in (c) and send the
+   refused step again under that read's `state`.
 
 ## Adding the bundle to a deployment
 
 `make bundle` builds the release tree — `components/fastmail-mail-read/`,
 `components/fastmail-mail-write/`, `components/fastmail-contacts/`,
-`modules/fastmail-mail-read.brenn`, `modules/fastmail-mail-write.brenn` and
-`modules/fastmail-contacts.brenn` — and `make bundle-dir` prints its absolute
+`components/fastmail-contacts-write/`, `modules/fastmail-mail-read.brenn`,
+`modules/fastmail-mail-write.brenn`, `modules/fastmail-contacts.brenn` and
+`modules/fastmail-contacts-write.brenn` — and `make bundle-dir` prints its absolute
 path; a deploy pipeline copies that tree and writes a `VERSION` file beside
 it, which a mount requires. This repository ships no installer.
 
@@ -164,6 +302,7 @@ with the other `use` lines:
 use @fastmail-mail-read::*;
 use @fastmail-mail-write::*;
 use @fastmail-contacts::*;
+use @fastmail-contacts-write::*;
 ```
 
 A read's answer is Fastmail's JSON as a string inside the tool result, and
@@ -252,6 +391,29 @@ api_key_provider fastmail-contacts {
 }
 ```
 
+The contacts write component's provider holds the contacts read-write tokens
+for the same accounts, under the same names and with the same `default`:
+
+```
+api_key_provider fastmail-contacts-write {
+  header = "Authorization";
+  api_hosts = ["https://api.fastmail.com"];
+  account alice {
+    user = "alice";
+    key_file = "/etc/brenn/fastmail-contacts-write/alice";
+    default = true;
+  }
+  account alice-work {
+    user = "alice";
+    key_file = "/etc/brenn/fastmail-contacts-write/alice-work";
+  }
+  account bob {
+    user = "bob";
+    key_file = "/etc/brenn/fastmail-contacts-write/bob";
+  }
+}
+```
+
 The inbox the read instance's answers arrive on. The class's four tools together
 allow 12 live requests, each with one nested call outstanding; a result can
 be re-delivered once, so `retain_depth` is at least 24, rounded up to 32:
@@ -285,6 +447,18 @@ channel at "brenn:tool-results/fastmail_contacts" {
   push_depth = 1;
   retain_depth = 32;
   standing_retain_depth = 32;
+  noise = alarm;
+}
+```
+
+The contacts write class's two tools allow 4 live requests, so 2 × 4 = 8 fits
+the default of 16; declare its inbox anyway so a full one raises an alarm:
+
+```
+channel at "brenn:tool-results/fastmail_contacts_write" {
+  push_depth = 1;
+  retain_depth = 16;
+  standing_retain_depth = 16;
   noise = alarm;
 }
 ```
@@ -334,11 +508,26 @@ new fastmail_contacts: FastmailContacts {
     host = "api.fastmail.com"
   };
 }
+
+new fastmail_contacts_write: FastmailContactsWrite {
+  grants = [log, store, config, tools, provides];
+  store_path = "/var/lib/brenn/stores/fastmail_contacts_write";
+  tool api-request {
+    allow { provider = "fastmail-contacts-write"; method = "GET";  host = "api.fastmail.com"; path = "/jmap/session"; }
+    allow { provider = "fastmail-contacts-write"; method = "POST"; host = "api.fastmail.com"; path = "/jmap/api"; }
+    rate_limit { burst = 20; sustained_per_minute = 60; }
+  }
+  config = {
+    provider = "fastmail-contacts-write",
+    host = "api.fastmail.com"
+  };
+}
 ```
 
 And on each agent that may use the account, which must run in a
 `container`, the read tools, the write tools where the agent may change the
-account, and the contacts tools where it may read contacts:
+account, the contacts tools where it may read contacts, and the contacts
+write tools where it may change them:
 
 ```
   tool fastmail-mailboxes {}
@@ -352,6 +541,8 @@ account, and the contacts tools where it may read contacts:
   tool fastmail-address-books {}
   tool fastmail-contact-search {}
   tool fastmail-contact-read {}
+  tool fastmail-contact-create {}
+  tool fastmail-contact-update {}
 ```
 
 A draft is from one of the account's sending identities: the only one, or the account's
@@ -363,9 +554,9 @@ whose address contains `*` is never sent from.
 Run `brenn config-check` on the document before stopping the service, then
 restart: a key provider and the `messaging` section are read at boot, and a
 reload that changes either is refused; installing a component whose class
-provides tools, such as adding `fastmail-mail-write` or `fastmail-contacts`
-to a deployment that runs only the read component, also takes a restart, as
-does the new key provider each brings.
+provides tools, such as adding `fastmail-mail-write`, `fastmail-contacts` or
+`fastmail-contacts-write` to a deployment that runs only the read component,
+also takes a restart, as does the new key provider each brings.
 
 ## Limits an operator should know
 
@@ -379,7 +570,9 @@ does the new key provider each brings.
   of search results, needs the raised cap above. A contact read or a default
   page of 10 contacts fits the default cap; a full page of 25, or a contact
   with long notes, needs the raised one. A contact read has no argument to
-  narrow it: a refusal names the setting to raise.
+  narrow it: a refusal names the setting to raise. A contact update first
+  reads the one list it changes (and the name, when it changes the name), so
+  it meets the same cap only for a contact whose one list is very large.
 - **Arguments.** A nested call's arguments are capped at 64 KiB; every
   request the components build fits under it by construction.
   `FastmailOrganize` takes 1–500 message ids and up to 20 entries in each of
@@ -388,11 +581,18 @@ does the new key provider each brings.
   recipients in each of `to`, `cc` and `bcc`, a subject of up to 500
   characters, and a body of up to 20000 characters and 30000 bytes as sent,
   where a line break counts as three and a quote or backslash as four.
+  `FastmailContactCreate` refuses a contact whose texts together are over
+  30000 bytes as sent, asking for fewer or shorter entries;
+  `FastmailContactUpdate` changes one entry per call, its longest text a
+  4000-character note.
 - **Time.** A tool call has 240 seconds end to end. Each step — the session
   read, the JMAP call, and for a thread a second JMAP call — is one nested
   call of at most 60 seconds. A draft is three steps: the session, a lookup
   of the sending identity, the Drafts mailbox and any original, then the
-  write. Each contacts tool is two steps: the session, then one JMAP call.
+  write. Each contacts read tool, and `FastmailContactCreate`, is two steps:
+  the session, then one JMAP call. `FastmailContactUpdate` is three: the
+  session, a read of the contact, then the write, which Fastmail refuses if
+  any contact changed in between; the agent is told to ask again.
 - **Writes are answered per message.** Fastmail applies `FastmailOrganize`'s
   change to each message on its own: the answer counts the messages changed
   and lists each refused one under `not_updated` with Fastmail's reason, and
@@ -416,8 +616,9 @@ does the new key provider each brings.
   Fastmail's error bodies. A dead or narrowed token reaches the agent as a
   refusal telling the operator to replace that account's key file and
   restart. A read-only token on the write instance answers every write with
-  "cannot write mail", the same instruction: a token with read-write access
-  to mail.
+  "cannot write mail", and on the contacts write instance with "cannot write
+  contacts", the same instruction: a token with read-write access to mail, or
+  to contacts.
 
 ## Documentation
 
@@ -426,8 +627,9 @@ does the new key provider each brings.
 - [`AGENTS.md`](AGENTS.md) — the gate, the changelog and the TODO
   conventions.
 - [`spec/fastmail-mail-read.brenn`](spec/fastmail-mail-read.brenn),
-  [`spec/fastmail-mail-write.brenn`](spec/fastmail-mail-write.brenn) and
-  [`spec/fastmail-contacts.brenn`](spec/fastmail-contacts.brenn) — the
+  [`spec/fastmail-mail-write.brenn`](spec/fastmail-mail-write.brenn),
+  [`spec/fastmail-contacts.brenn`](spec/fastmail-contacts.brenn) and
+  [`spec/fastmail-contacts-write.brenn`](spec/fastmail-contacts-write.brenn) — the
   tools' input schemas and the instances' settings.
 - [`config/example.brenn`](config/example.brenn) — the checked example
   configuration the excerpts above come from.

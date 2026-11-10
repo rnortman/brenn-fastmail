@@ -6,9 +6,10 @@
 
 use brenn_provider_kit::Args;
 use fastmail_jmap::{
-    Anniversary, AnniversaryDate, CardEmail, CardName, ContactCard, Note, OnlineService,
+    Anniversary, CardEmail, CardName, ContactCard, EntryList, Nickname, Note, OnlineService,
     Organization, Phone, PostalAddress, Title,
 };
+use fastmail_provider::contacts::list_name;
 use serde_json::{Value, json};
 
 /// Serialized-width bounds on strings copied out of a card, by what the
@@ -20,9 +21,9 @@ pub const TEXT_MAX: usize = 1000;
 /// unit's, title's or service's name, a service's user, an email address, a
 /// phone number, an address book's name.
 pub const NAME_MAX: usize = 400;
-/// An id, a uid, a member uid, an address book id, a label.
+/// An id, a uid, a member uid, an address book id, an entry's key, a label.
 pub const ID_MAX: usize = 255;
-/// A timestamp.
+/// A timestamp, an anniversary's date.
 pub const TIME_MAX: usize = 64;
 /// A kind, a country code, a context or a feature.
 pub const KIND_MAX: usize = 32;
@@ -183,47 +184,69 @@ pub fn read(card: &ContactCard) -> Value {
             },
         );
     }
-    strings(
+    list(
         &mut out,
-        "nicknames",
+        list_name(EntryList::Nicknames),
         &card.nicknames,
         NICKNAMES_MAX,
-        NAME_MAX,
+        nickname,
     );
     list(
         &mut out,
-        "organizations",
+        list_name(EntryList::Organizations),
         &card.organizations,
         ORGANIZATIONS_MAX,
         organization,
     );
-    list(&mut out, "titles", &card.titles, TITLES_MAX, |title| {
-        self::title(title, &card.organizations)
-    });
-    list(&mut out, "emails", &card.emails, EMAILS_MAX, email);
-    list(&mut out, "phones", &card.phones, PHONES_MAX, phone);
     list(
         &mut out,
-        "online_services",
+        list_name(EntryList::Titles),
+        &card.titles,
+        TITLES_MAX,
+        |title| self::title(title, &card.organizations),
+    );
+    list(
+        &mut out,
+        list_name(EntryList::Emails),
+        &card.emails,
+        EMAILS_MAX,
+        email,
+    );
+    list(
+        &mut out,
+        list_name(EntryList::Phones),
+        &card.phones,
+        PHONES_MAX,
+        phone,
+    );
+    list(
+        &mut out,
+        list_name(EntryList::OnlineServices),
         &card.online_services,
         ONLINE_SERVICES_MAX,
         online_service,
     );
     list(
         &mut out,
-        "addresses",
+        list_name(EntryList::Addresses),
         &card.addresses,
         ADDRESSES_MAX,
         address,
     );
     list(
         &mut out,
-        "anniversaries",
+        list_name(EntryList::Anniversaries),
         &card.anniversaries,
         ANNIVERSARIES_MAX,
         anniversary,
     );
-    list(&mut out, "notes", &card.notes, NOTES_MAX, note);
+    list(
+        &mut out,
+        list_name(EntryList::Notes),
+        &card.notes,
+        NOTES_MAX,
+        note,
+    );
     members(&mut out, &card.members);
     strings(
         &mut out,
@@ -254,8 +277,24 @@ fn members(out: &mut Args, members: &[String]) {
     }
 }
 
-fn organization(organization: &Organization) -> Value {
+/// An entry of one of the card's lists, opened with its map key at `key`.
+/// The key is shown whole or not at all, because a cut key names no entry.
+fn entry(key: &str) -> Args {
     let mut out = Args::new();
+    if !cut_width(key, ID_MAX).1 {
+        out.insert("key".into(), json!(key));
+    }
+    out
+}
+
+fn nickname(nickname: &Nickname) -> Value {
+    let mut out = entry(&nickname.key);
+    out.insert("name".into(), text(&nickname.name, NAME_MAX));
+    Value::Object(out)
+}
+
+fn organization(organization: &Organization) -> Value {
+    let mut out = entry(&organization.key);
     put(&mut out, "name", organization.name.as_deref(), NAME_MAX);
     strings(&mut out, "units", &organization.units, UNITS_MAX, NAME_MAX);
     Value::Object(out)
@@ -264,13 +303,13 @@ fn organization(organization: &Organization) -> Value {
 /// A title, naming the organization its `organizationId` names when the
 /// card has that organization and it has a name.
 fn title(title: &Title, organizations: &[Organization]) -> Value {
-    let mut out = Args::new();
+    let mut out = entry(&title.key);
     out.insert("name".into(), text(&title.name, NAME_MAX));
     out.insert("kind".into(), text(&title.kind, KIND_MAX));
     let named = title.organization_id.as_ref().and_then(|id| {
         organizations
             .iter()
-            .find(|organization| &organization.id == id)
+            .find(|organization| &organization.key == id)
             .and_then(|organization| organization.name.as_deref())
     });
     put(&mut out, "organization", named, NAME_MAX);
@@ -278,7 +317,7 @@ fn title(title: &Title, organizations: &[Organization]) -> Value {
 }
 
 fn email(email: &CardEmail) -> Value {
-    let mut out = Args::new();
+    let mut out = entry(&email.key);
     out.insert("address".into(), text(&email.address, NAME_MAX));
     set(&mut out, "contexts", &email.contexts);
     put(&mut out, "label", email.label.as_deref(), ID_MAX);
@@ -287,7 +326,7 @@ fn email(email: &CardEmail) -> Value {
 }
 
 fn phone(phone: &Phone) -> Value {
-    let mut out = Args::new();
+    let mut out = entry(&phone.key);
     out.insert("number".into(), text(&phone.number, NAME_MAX));
     set(&mut out, "features", &phone.features);
     set(&mut out, "contexts", &phone.contexts);
@@ -297,7 +336,7 @@ fn phone(phone: &Phone) -> Value {
 }
 
 fn online_service(service: &OnlineService) -> Value {
-    let mut out = Args::new();
+    let mut out = entry(&service.key);
     put(&mut out, "service", service.service.as_deref(), NAME_MAX);
     put(&mut out, "user", service.user.as_deref(), NAME_MAX);
     put(&mut out, "uri", service.uri.as_deref(), TEXT_MAX);
@@ -308,7 +347,7 @@ fn online_service(service: &OnlineService) -> Value {
 }
 
 fn address(address: &PostalAddress) -> Value {
-    let mut out = Args::new();
+    let mut out = entry(&address.key);
     put(&mut out, "text", address.display().as_deref(), TEXT_MAX);
     put(
         &mut out,
@@ -322,30 +361,15 @@ fn address(address: &PostalAddress) -> Value {
 }
 
 fn anniversary(anniversary: &Anniversary) -> Value {
-    json!({
-        "kind": text(&anniversary.kind, KIND_MAX),
-        "date": date(&anniversary.date),
-    })
-}
-
-/// A date as ISO 8601 writes it: `1953-04-15`, `1953-04`, `1953`, a month
-/// and day as `--04-15`; a timestamp as its UTC string.
-fn date(date: &AnniversaryDate) -> Value {
-    match date {
-        AnniversaryDate::Utc(utc) => text(utc, TIME_MAX),
-        AnniversaryDate::Partial { year, month, day } => json!(match (year, month, day) {
-            (Some(year), None, None) => format!("{year:04}"),
-            (Some(year), Some(month), None) => format!("{year:04}-{month:02}"),
-            (Some(year), Some(month), Some(day)) => format!("{year:04}-{month:02}-{day:02}"),
-            (None, Some(month), Some(day)) => format!("--{month:02}-{day:02}"),
-            _ => unreachable!("the card reader admits only RFC 9553's four partial dates"),
-        }),
-    }
+    let mut out = entry(&anniversary.key);
+    out.insert("kind".into(), text(&anniversary.kind, KIND_MAX));
+    out.insert("date".into(), text(&anniversary.date.to_text(), TIME_MAX));
+    Value::Object(out)
 }
 
 fn note(note: &Note) -> Value {
     let (cut, truncated) = cut_width(&note.note, NOTE_MAX);
-    let mut out = Args::new();
+    let mut out = entry(&note.key);
     out.insert("note".into(), json!(cut));
     put(&mut out, "created", note.created.as_deref(), TIME_MAX);
     out.insert("truncated".into(), json!(truncated));

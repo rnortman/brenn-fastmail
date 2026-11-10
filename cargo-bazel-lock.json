@@ -1,8 +1,28 @@
 {
-  "checksum": "3df9fbb389a744c224c4a4e5923a34ca02668c6d435c82be2870f6113a8d4972",
+  "checksum": "c49f3fda553255ad8c4237e4f6a46c8b2696bed6517af6af2238b50bfdc44864",
   "crates": {
     "fastmail-contacts 0.2.0": {
       "name": "fastmail-contacts",
+      "version": "0.2.0",
+      "package_url": null,
+      "repository": null,
+      "targets": [],
+      "library_target_name": null,
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "edition": "2024",
+        "version": "0.2.0"
+      },
+      "license": "Apache-2.0",
+      "license_ids": [
+        "Apache-2.0"
+      ],
+      "license_file": null
+    },
+    "fastmail-contacts-write 0.2.0": {
+      "name": "fastmail-contacts-write",
       "version": "0.2.0",
       "package_url": null,
       "repository": null,
@@ -131,6 +151,7 @@
   "binary_crates": [],
   "workspace_members": {
     "fastmail-contacts 0.2.0": "fastmail-contacts",
+    "fastmail-contacts-write 0.2.0": "fastmail-contacts-write",
     "fastmail-jmap 0.2.0": "jmap",
     "fastmail-mail-read 0.2.0": "fastmail-mail-read",
     "fastmail-mail-write 0.2.0": "fastmail-mail-write",

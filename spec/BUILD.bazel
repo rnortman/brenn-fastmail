@@ -6,6 +6,7 @@ package(default_visibility = ["//visibility:public"])
 
 exports_files([
     "fastmail-contacts.brenn",
+    "fastmail-contacts-write.brenn",
     "fastmail-mail-read.brenn",
     "fastmail-mail-write.brenn",
 ])

@@ -16,7 +16,7 @@ use fastmail_jmap::{
     Address, CallId, Email, EmailCreate, EmailGet, EmailSet, Error as JmapError, Identity,
     IdentityGet, Ids, MailboxQuery, QueryResult, Request, Response,
 };
-use fastmail_provider::args::{ACCOUNT_ARG, is_token, token, wire_safe, wire_width};
+use fastmail_provider::args::{ACCOUNT_ARG, is_token, one_line, token, wire_safe, wire_width};
 use fastmail_provider::failure::{
     SESSION_SETUP, StepFailure, derived_str, invalid, jmap_failure, missing_derived, set_failure,
     write_method_failure,
@@ -26,7 +26,7 @@ use fastmail_provider::settings::{API_NAME, Settings};
 use fastmail_provider::steps::{ACCOUNT_KEY, SESSION_STEP, api_step, read_session};
 use serde_json::{Map, Value, json};
 
-use super::{API_STEP, InFlight, one_line};
+use super::{API_STEP, DATA, InFlight};
 
 /// The draft's write: the `Email/set` that creates it.
 pub(super) const DRAFT_SET_STEP: u8 = 3;
@@ -373,6 +373,8 @@ impl Found {
     }
 }
 
+// TODO(notes-message-shape-unsampled): a notes writer would build its message
+// here, once a note written in Fastmail's own notes screen has been sampled.
 /// The write: one `Email/set` creating the draft in the Drafts mailbox.
 fn set_request(args: &DraftArgs, account_id: &str, found: &Found) -> (Request, CallId) {
     let mut request = Request::mail();
@@ -446,7 +448,9 @@ pub(super) fn step(
             let found = Found::from_derived(state)?;
             let response = Response::parse(body).map_err(jmap_failure)?;
             let (_, call) = set_request(args, account_id, &found);
-            let set = response.result(&call).map_err(write_method_failure)?;
+            let set = response
+                .result(&call)
+                .map_err(|error| write_method_failure(DATA, error))?;
             Ok(created(&found, set)?)
         }
     }
@@ -814,7 +818,7 @@ mod tests {
     use brenn_provider_kit::testutil::{Answered, MemoryHost, failure};
     use brenn_provider_kit::{Delivered, ErrorKind, Input, NestedError};
     use fastmail_jmap::session::CORE;
-    use fastmail_provider::failure::{FORBIDDEN_CHANGE, READ_ONLY_TOKEN};
+    use fastmail_provider::failure::{FORBIDDEN_CHANGE, read_only_token};
     use fastmail_provider::testutil::{
         HOST_ARGS_CAP_BYTES, completed, incoming, jmap, row, session_body, settings,
     };
@@ -1586,7 +1590,8 @@ mod tests {
                 jmap(json!([["error", { "type": "accountReadOnly" }, "c0"]]))
             ),
             Next::Fail(internal(format!(
-                "Fastmail: Email/set failed: accountReadOnly; {READ_ONLY_TOKEN}"
+                "Fastmail: Email/set failed: accountReadOnly; {}",
+                read_only_token("mail")
             )))
         );
         // The lookup reads: a lost answer there carries no hint.

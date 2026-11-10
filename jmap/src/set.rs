@@ -1,10 +1,11 @@
-//! The generic `/set` pieces (RFC 8620 section 5.3): the result reader, the
-//! per-object refusal, and the PatchObject an update carries.
+//! The generic `/set` pieces (RFC 8620 section 5.3): the arguments, the
+//! result reader, the per-object refusal, and the PatchObject an update
+//! carries.
 
 use std::collections::BTreeMap;
 use std::fmt;
 
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::error::{Error, OneLine};
 use crate::method::Fields;
@@ -123,8 +124,19 @@ impl Patch {
     }
 
     /// Sets a whole property, e.g. `parentId` to `null`.
-    pub fn property(mut self, name: &str, value: Value) -> Patch {
-        self.paths.insert(escape(name), value);
+    pub fn property(self, name: &str, value: Value) -> Patch {
+        self.at(&[name], value)
+    }
+
+    /// Sets the value at a path of segments, e.g. `["emails", "k1",
+    /// "address"]`; each segment is escaped on its own.
+    pub fn at(mut self, path: &[&str], value: Value) -> Patch {
+        let path = path
+            .iter()
+            .map(|segment| escape(segment))
+            .collect::<Vec<String>>()
+            .join("/");
+        self.paths.insert(path, value);
         self
     }
 
@@ -137,12 +149,37 @@ impl Patch {
         )
     }
 
-    fn flag(mut self, property: &str, key: &str, on: bool) -> Patch {
+    fn flag(self, property: &str, key: &str, on: bool) -> Patch {
         let value = if on { Value::Bool(true) } else { Value::Null };
-        self.paths
-            .insert(format!("{property}/{}", escape(key)), value);
-        self
+        self.at(&[property, key], value)
     }
+}
+
+/// The arguments of a `/set` with creates and updates, each map present only
+/// when non-empty, and `ifInState` only when given.
+pub(crate) fn set_args(
+    account_id: &str,
+    create: impl Iterator<Item = (String, Value)>,
+    update: &[(String, Patch)],
+    if_in_state: Option<&str>,
+) -> Value {
+    let mut args = Map::new();
+    args.insert("accountId".into(), json!(account_id));
+    if let Some(state) = if_in_state {
+        args.insert("ifInState".into(), json!(state));
+    }
+    let create: Map<String, Value> = create.collect();
+    if !create.is_empty() {
+        args.insert("create".into(), Value::Object(create));
+    }
+    if !update.is_empty() {
+        let update: Map<String, Value> = update
+            .iter()
+            .map(|(id, patch)| (id.clone(), patch.to_value()))
+            .collect();
+        args.insert("update".into(), Value::Object(update));
+    }
+    Value::Object(args)
 }
 
 /// One reference token of a JSON pointer (RFC 6901 section 3).
@@ -287,6 +324,48 @@ mod tests {
                 .mailbox("~1/", false)
                 .to_value(),
             json!({"keywords/a~1b~0c": true, "mailboxIds/~01~1": null})
+        );
+    }
+
+    #[test]
+    fn a_patch_at_a_path_escapes_each_segment_and_joins_them() {
+        assert_eq!(
+            Patch::new()
+                .at(&["emails", "k1", "address"], json!("alice@example.com"))
+                .at(&["phones", "a/b~c"], Value::Null)
+                .at(&["name"], json!({"full": "Alice"}))
+                .to_value(),
+            json!({
+                "emails/k1/address": "alice@example.com",
+                "phones/a~1b~0c": null,
+                "name": {"full": "Alice"}
+            })
+        );
+        assert_eq!(
+            Patch::new().property("a/b", json!(1)).to_value(),
+            json!({"a~1b": 1})
+        );
+    }
+
+    #[test]
+    fn set_args_carry_if_in_state_only_when_given() {
+        let update = [("c1".to_owned(), Patch::new().property("x", json!(1)))];
+        assert_eq!(
+            set_args("a1", std::iter::empty(), &update, Some("s7")),
+            json!({"accountId": "a1", "ifInState": "s7", "update": {"c1": {"x": 1}}})
+        );
+        assert_eq!(
+            set_args(
+                "a1",
+                [("k1".to_owned(), json!({"y": 2}))].into_iter(),
+                &[],
+                None
+            ),
+            json!({"accountId": "a1", "create": {"k1": {"y": 2}}})
+        );
+        assert_eq!(
+            set_args("a1", std::iter::empty(), &[], None),
+            json!({"accountId": "a1"})
         );
     }
 }

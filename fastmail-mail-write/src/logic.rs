@@ -27,14 +27,16 @@ mod draft;
 use std::collections::BTreeSet;
 
 use brenn_provider_kit::{
-    Args, COMPACT_RESULT_CEILING, Call, Failure, Logic, NestedError, Next, Tool, bounded, capped,
-    cut, flag, internal, no_such_step, object, serialized_len,
+    Args, COMPACT_RESULT_CEILING, Call, Failure, Logic, NestedError, Next, Tool, bounded, cut,
+    flag, internal, no_such_step, object, serialized_len,
 };
 use fastmail_jmap::session::MAIL;
 use fastmail_jmap::{
     CallId, EmailSet, MailboxCreate, MailboxSet, Patch, Request, Response, SetError,
 };
-use fastmail_provider::args::{ACCOUNT_ARG, account_arg, id_list, is_keyword, keyword_rule, token};
+use fastmail_provider::args::{
+    ACCOUNT_ARG, account_arg, id_list, is_keyword, keyword_rule, one_line, token,
+};
 use fastmail_provider::failure::{
     MAILBOX_MEMBERSHIP_HINT, StepFailure, concerns_mailbox_membership, derived_str, jmap_failure,
     set_failure, step_answer, stored_args, write_method_failure,
@@ -45,6 +47,9 @@ use serde_json::{Map, Value, json};
 
 use crate::spec::Provided;
 use draft::{DRAFT_SET_STEP, DRAFT_UNKNOWN_HINT, DraftArgs};
+
+/// What this component writes, as a refusal for a read-only token names it.
+const DATA: &str = "mail";
 
 /// The most messages one organize changes.
 const ORGANIZE_IDS_MAX: usize = 500;
@@ -328,18 +333,6 @@ impl MailboxUpdateArgs {
     }
 }
 
-/// A one-line text argument at `key`: as `capped` admits it at `max_chars`,
-/// with no control character.
-fn one_line(map: &Args, key: &str, max_chars: usize) -> Result<Option<String>, String> {
-    match capped(map, key, max_chars)? {
-        None => Ok(None),
-        Some(text) if text.chars().any(char::is_control) => {
-            Err(format!("`{key}` must not hold a control character"))
-        }
-        Some(text) => Ok(Some(text.to_owned())),
-    }
-}
-
 fn keys(tool: Provided) -> &'static [&'static str] {
     match tool {
         Provided::FastmailOrganize => OrganizeArgs::KEYS,
@@ -468,7 +461,9 @@ fn step(
     let account_id = derived_str(state, ACCOUNT_KEY)?;
     let response = Response::parse(body).map_err(jmap_failure)?;
     let (_, call) = api_request(args, account_id);
-    let result = response.result(&call).map_err(write_method_failure)?;
+    let result = response
+        .result(&call)
+        .map_err(|error| write_method_failure(DATA, error))?;
     Ok(match args {
         SetArgs::Organize(args) => organized(args, result),
         SetArgs::MailboxCreate(args) => mailbox_created(args, result),
@@ -575,7 +570,7 @@ mod tests {
     };
     use fastmail_jmap::session::CORE;
     use fastmail_provider::args::{ID_MAX_CHARS, KEYWORD_MAX_CHARS};
-    use fastmail_provider::failure::{FORBIDDEN_CHANGE, READ_ONLY_TOKEN};
+    use fastmail_provider::failure::{FORBIDDEN_CHANGE, read_only_token};
     use fastmail_provider::testutil::{
         ACCOUNT_PATTERN, HOST_ARGS_CAP_BYTES, KEYWORD_PATTERN, account_probes, completed, incoming,
         jmap, row, session_body, settings,
@@ -1573,7 +1568,8 @@ mod tests {
             assert_eq!(
                 answered(&state, method_error(kind)),
                 Next::Fail(internal(format!(
-                    "Fastmail: Email/set failed: {kind}: why; {READ_ONLY_TOKEN}"
+                    "Fastmail: Email/set failed: {kind}: why; {}",
+                    read_only_token("mail")
                 )))
             );
         }

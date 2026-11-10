@@ -75,8 +75,10 @@ pin irrelevant. `make check` prints a notice while the line is in force.
 - `jmap/` — `fastmail-jmap`, the JMAP crate. No I/O: it builds request bodies
   and reads answers, and is compiled for the host (its tests) and for wasm32
   (inside a component). `src/method.rs` holds what every data type's
-  standard methods share, `src/mail.rs` and `src/set.rs` the mail methods,
-  `src/contacts.rs` the contacts methods and the JSContact card reader.
+  standard methods share, `src/set.rs` what every `/set` shares (its
+  arguments, its result and the patch), `src/mail.rs` the mail methods,
+  `src/contacts.rs` the contacts methods, the JSContact card reader, and the
+  cards and patches the contacts write tools send.
 - `provider/` — `fastmail-provider`, the plumbing the provider components
   share: settings, the `account`, id and keyword arguments, the session step
   and the API call, and the mapping of Fastmail's answers onto the request's
@@ -84,8 +86,8 @@ pin irrelevant. `make check` prints a notice while the line is in force.
   tests; its `testutil` module carries those tests' fixtures.
 - `spec/` — the components' authored specifications, the module root a
   deployment's `use @fastmail-mail-read::*;`,
-  `use @fastmail-mail-write::*;` and `use @fastmail-contacts::*;` resolve
-  against.
+  `use @fastmail-mail-write::*;`, `use @fastmail-contacts::*;` and
+  `use @fastmail-contacts-write::*;` resolve against.
 - `fastmail-mail-read/` — the read provider: `src/logic.rs` (arguments, JMAP
   requests, answers and compaction, all host-testable), `src/html.rs` (HTML
   parts as plain text) and `src/lib.rs` (the guest glue).
@@ -97,8 +99,12 @@ pin irrelevant. `make check` prints a notice while the line is in force.
   the step machine, requests and failures, all host-testable), `src/card.rs`
   (a card as a search summary and as a full answer, with every list cap and
   string bound) and `src/lib.rs` (the guest glue).
-- `config/example.brenn` — the deployer's document: the three key providers,
-  the three instances with their clauses and an agent granted the tools.
+- `fastmail-contacts-write/` — the contacts write provider: `src/logic.rs`
+  (the create and update arguments, the step machine, the update's patch
+  from its read, requests and failures, all host-testable) and `src/lib.rs`
+  (the guest glue).
+- `config/example.brenn` — the deployer's document: the four key providers,
+  the four instances with their clauses and an agent granted the tools.
   `//:example_fit` compiles it and `//:config_check` lowers it, so the
   example's shape and settings cannot drift from what brenn accepts; neither
   holds the agent's `tool` grants to the tools the instances provide, which

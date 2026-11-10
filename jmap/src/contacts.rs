@@ -1,18 +1,24 @@
 //! The contacts methods this crate builds and reads (RFC 9610):
-//! `AddressBook/get`, `ContactCard/query` and `ContactCard/get`. A card is
-//! JSContact (RFC 9553); the reader takes the properties the tools show, each
-//! with the type RFC 9553 gives it, and ignores every other property.
+//! `AddressBook/get`, `ContactCard/query`, `ContactCard/get` and
+//! `ContactCard/set`. A card is JSContact (RFC 9553); the reader takes the
+//! properties the tools show, each with the type RFC 9553 gives it, and
+//! ignores every other property. A write builds a new card from bare values
+//! and patches an existing one at the entry, so what it does not name stays
+//! as the server holds it.
 //!
 //! JSContact's lists are `Id`-keyed maps with no order of their own. Each is
 //! read into a `Vec` ordered by `pref` ascending where the type has one (RFC
 //! 9553 section 1.5.3: lower is preferred), entries without `pref` after those
 //! with, and ties and the types without `pref` by map key.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use serde_json::{Map, Value, json};
 
 use crate::error::Error;
 use crate::method::{Fields, GetResult, Ids, Sort, read_get};
 use crate::request::{CallId, Request};
+use crate::set::{Patch, SetResult, set_args};
 
 /// The properties `AddressBook/get` asks for; `AddressBook::list` reads these.
 pub const ADDRESS_BOOK_PROPERTIES: &[&str] = &[
@@ -299,20 +305,20 @@ impl CardName {
     }
 }
 
-/// An `Organization` (RFC 9553 section 2.2.3), with its map key as `id` so a
-/// title can name it. `units` are the `OrgUnit` names, in order.
+/// An `Organization` (RFC 9553 section 2.2.3); a title names it by `key`.
+/// `units` are the `OrgUnit` names, in order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Organization {
-    pub id: String,
+    pub key: String,
     pub name: Option<String>,
     pub units: Vec<String>,
 }
 
 impl Organization {
-    fn read(value: &Value) -> Result<Organization, Error> {
+    fn read(key: String, value: &Value) -> Result<Organization, Error> {
         let f = Fields::of(value, "ContactCard.organizations")?;
         Ok(Organization {
-            id: String::new(),
+            key,
             name: f.opt_string("name")?,
             units: f.list("units", |unit| {
                 Fields::of(unit, "ContactCard.organizations.units")?.string("name")
@@ -324,15 +330,18 @@ impl Organization {
 /// A `Title` (RFC 9553 section 2.2.5); `kind` defaults to `title`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Title {
+    /// The entry's key in the card's map.
+    pub key: String,
     pub name: String,
     pub kind: String,
     pub organization_id: Option<String>,
 }
 
 impl Title {
-    fn read(value: &Value) -> Result<Title, Error> {
+    fn read(key: String, value: &Value) -> Result<Title, Error> {
         let f = Fields::of(value, "ContactCard.titles")?;
         Ok(Title {
+            key,
             name: f.string("name")?,
             kind: f.opt_string("kind")?.unwrap_or_else(|| "title".into()),
             organization_id: f.opt_string("organizationId")?,
@@ -343,6 +352,8 @@ impl Title {
 /// An `EmailAddress` (RFC 9553 section 2.3.1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CardEmail {
+    /// The entry's key in the card's map.
+    pub key: String,
     pub address: String,
     pub contexts: Vec<String>,
     pub label: Option<String>,
@@ -350,9 +361,10 @@ pub struct CardEmail {
 }
 
 impl CardEmail {
-    fn read(value: &Value) -> Result<CardEmail, Error> {
+    fn read(key: String, value: &Value) -> Result<CardEmail, Error> {
         let f = Fields::of(value, "ContactCard.emails")?;
         Ok(CardEmail {
+            key,
             address: f.string("address")?,
             contexts: held(&f, "contexts")?,
             label: f.opt_string("label")?,
@@ -364,6 +376,8 @@ impl CardEmail {
 /// A `Phone` (RFC 9553 section 2.3.3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Phone {
+    /// The entry's key in the card's map.
+    pub key: String,
     pub number: String,
     pub features: Vec<String>,
     pub contexts: Vec<String>,
@@ -372,9 +386,10 @@ pub struct Phone {
 }
 
 impl Phone {
-    fn read(value: &Value) -> Result<Phone, Error> {
+    fn read(key: String, value: &Value) -> Result<Phone, Error> {
         let f = Fields::of(value, "ContactCard.phones")?;
         Ok(Phone {
+            key,
             number: f.string("number")?,
             features: held(&f, "features")?,
             contexts: held(&f, "contexts")?,
@@ -387,6 +402,8 @@ impl Phone {
 /// An `OnlineService` (RFC 9553 section 2.3.2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OnlineService {
+    /// The entry's key in the card's map.
+    pub key: String,
     pub service: Option<String>,
     pub uri: Option<String>,
     pub user: Option<String>,
@@ -396,9 +413,10 @@ pub struct OnlineService {
 }
 
 impl OnlineService {
-    fn read(value: &Value) -> Result<OnlineService, Error> {
+    fn read(key: String, value: &Value) -> Result<OnlineService, Error> {
         let f = Fields::of(value, "ContactCard.onlineServices")?;
         Ok(OnlineService {
+            key,
             service: f.opt_string("service")?,
             uri: f.opt_string("uri")?,
             user: f.opt_string("user")?,
@@ -412,6 +430,8 @@ impl OnlineService {
 /// An `Address` (RFC 9553 section 2.5.1).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PostalAddress {
+    /// The entry's key in the card's map.
+    pub key: String,
     pub full: Option<String>,
     pub components: Vec<Component>,
     pub is_ordered: bool,
@@ -422,9 +442,10 @@ pub struct PostalAddress {
 }
 
 impl PostalAddress {
-    fn read(value: &Value) -> Result<PostalAddress, Error> {
+    fn read(key: String, value: &Value) -> Result<PostalAddress, Error> {
         let f = Fields::of(value, "ContactCard.addresses")?;
         Ok(PostalAddress {
+            key,
             full: f.opt_string("full")?,
             components: f.list("components", Component::read_address)?,
             is_ordered: f.opt_bool("isOrdered")?.unwrap_or(false),
@@ -497,15 +518,18 @@ impl AnniversaryDate {
 /// An `Anniversary` (RFC 9553 section 2.8.1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Anniversary {
+    /// The entry's key in the card's map.
+    pub key: String,
     pub kind: String,
     pub date: AnniversaryDate,
 }
 
 impl Anniversary {
-    fn read(value: &Value) -> Result<Anniversary, Error> {
+    fn read(key: String, value: &Value) -> Result<Anniversary, Error> {
         let f = Fields::of(value, "ContactCard.anniversaries")?;
         let date = f.get("date").ok_or_else(|| f.shape("date", "is missing"))?;
         Ok(Anniversary {
+            key,
             kind: f.string("kind")?,
             date: AnniversaryDate::read(date)?,
         })
@@ -515,31 +539,37 @@ impl Anniversary {
 /// A `Note` (RFC 9553 section 2.8.3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Note {
+    /// The entry's key in the card's map.
+    pub key: String,
     pub note: String,
     pub created: Option<String>,
 }
 
 impl Note {
-    fn read(value: &Value) -> Result<Note, Error> {
+    fn read(key: String, value: &Value) -> Result<Note, Error> {
         let f = Fields::of(value, "ContactCard.notes")?;
         Ok(Note {
+            key,
             note: f.string("note")?,
             created: f.opt_string("created")?,
         })
     }
 }
 
-/// A `Nickname` (RFC 9553 section 2.2.2): only its name is shown, but its
-/// `pref` orders the list.
-struct Nickname {
-    name: String,
-    pref: Option<u64>,
+/// A `Nickname` (RFC 9553 section 2.2.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Nickname {
+    /// The entry's key in the card's map.
+    pub key: String,
+    pub name: String,
+    pub pref: Option<u64>,
 }
 
 impl Nickname {
-    fn read(value: &Value) -> Result<Nickname, Error> {
+    fn read(key: String, value: &Value) -> Result<Nickname, Error> {
         let f = Fields::of(value, "ContactCard.nicknames")?;
         Ok(Nickname {
+            key,
             name: f.string("name")?,
             pref: f.opt_u64("pref")?,
         })
@@ -557,7 +587,7 @@ pub struct ContactCard {
     /// `individual` when absent.
     pub kind: String,
     pub name: Option<CardName>,
-    pub nicknames: Vec<String>,
+    pub nicknames: Vec<Nickname>,
     pub organizations: Vec<Organization>,
     pub titles: Vec<Title>,
     pub emails: Vec<CardEmail>,
@@ -591,31 +621,549 @@ impl ContactCard {
     }
 
     fn properties(f: &Fields<'_>, id: &str) -> Result<ContactCard, Error> {
-        let organizations = in_key_order(f, "organizations", Organization::read)?
-            .into_iter()
-            .map(|(id, organization)| Organization { id, ..organization })
-            .collect();
         Ok(ContactCard {
             id: id.to_owned(),
             uid: f.opt_string("uid")?,
             kind: f.opt_string("kind")?.unwrap_or_else(|| "individual".into()),
             name: f.get("name").map(CardName::read).transpose()?,
-            nicknames: by_pref(f, "nicknames", Nickname::read, |n| n.pref)?
-                .into_iter()
-                .map(|nickname| nickname.name)
-                .collect(),
-            organizations,
-            titles: values(in_key_order(f, "titles", Title::read)?),
-            emails: by_pref(f, "emails", CardEmail::read, |e| e.pref)?,
-            phones: by_pref(f, "phones", Phone::read, |p| p.pref)?,
-            online_services: by_pref(f, "onlineServices", OnlineService::read, |s| s.pref)?,
-            addresses: by_pref(f, "addresses", PostalAddress::read, |a| a.pref)?,
-            anniversaries: values(in_key_order(f, "anniversaries", Anniversary::read)?),
-            notes: values(in_key_order(f, "notes", Note::read)?),
+            nicknames: by_pref(f, EntryList::Nicknames, Nickname::read, |n| n.pref)?,
+            organizations: in_key_order(f, EntryList::Organizations, Organization::read)?,
+            titles: in_key_order(f, EntryList::Titles, Title::read)?,
+            emails: by_pref(f, EntryList::Emails, CardEmail::read, |e| e.pref)?,
+            phones: by_pref(f, EntryList::Phones, Phone::read, |p| p.pref)?,
+            online_services: by_pref(f, EntryList::OnlineServices, OnlineService::read, |s| {
+                s.pref
+            })?,
+            addresses: by_pref(f, EntryList::Addresses, PostalAddress::read, |a| a.pref)?,
+            anniversaries: in_key_order(f, EntryList::Anniversaries, Anniversary::read)?,
+            notes: in_key_order(f, EntryList::Notes, Note::read)?,
             members: held(f, "members")?,
             address_book_ids: held(f, "addressBookIds")?,
             created: f.opt_string("created")?,
             updated: f.opt_string("updated")?,
+        })
+    }
+}
+
+impl AnniversaryDate {
+    /// A partial date as ISO 8601 writes it: `1953`, `1953-04`, `1953-04-15`,
+    /// or `--04-15` for a month and day; month 1 to 12, day 1 to 31, as the
+    /// reader holds them. `None` for any other text.
+    pub fn parse_partial(text: &str) -> Option<AnniversaryDate> {
+        let number = |part: &str, digits: usize| -> Option<u32> {
+            (part.len() == digits && part.bytes().all(|b| b.is_ascii_digit()))
+                .then(|| part.parse().ok())
+                .flatten()
+        };
+        let (year, rest) = match text.strip_prefix("--") {
+            Some(rest) => (None, rest.split('-').map(str::to_owned).collect::<Vec<_>>()),
+            None => {
+                let mut parts = text.split('-');
+                let year = number(parts.next()?, 4)?;
+                (Some(year), parts.map(str::to_owned).collect())
+            }
+        };
+        let (month, day) = match (year, rest.as_slice()) {
+            (Some(_), []) => (None, None),
+            (Some(_), [month]) => (Some(number(month, 2)?), None),
+            (_, [month, day]) => (Some(number(month, 2)?), Some(number(day, 2)?)),
+            _ => return None,
+        };
+        if month.is_some_and(|m| !(1..=12).contains(&m))
+            || day.is_some_and(|d| !(1..=31).contains(&d))
+        {
+            return None;
+        }
+        Some(AnniversaryDate::Partial { year, month, day })
+    }
+
+    /// The date as text: a partial date in the form [`parse_partial`] reads
+    /// (`1953`, `1953-04`, `1953-04-15`, `--04-15`), a timestamp as its UTC
+    /// string.
+    ///
+    /// [`parse_partial`]: AnniversaryDate::parse_partial
+    pub fn to_text(&self) -> String {
+        match self {
+            AnniversaryDate::Utc(utc) => utc.clone(),
+            AnniversaryDate::Partial { year, month, day } => match (year, month, day) {
+                (Some(year), None, None) => format!("{year:04}"),
+                (Some(year), Some(month), None) => format!("{year:04}-{month:02}"),
+                (Some(year), Some(month), Some(day)) => format!("{year:04}-{month:02}-{day:02}"),
+                (None, Some(month), Some(day)) => format!("--{month:02}-{day:02}"),
+                _ => unreachable!("the card reader admits only RFC 9553's four partial dates"),
+            },
+        }
+    }
+
+    /// The date as JSContact writes it: a `PartialDate` or a `Timestamp`.
+    pub fn to_value(&self) -> Value {
+        match self {
+            AnniversaryDate::Partial { year, month, day } => {
+                let mut date = Map::new();
+                date.insert("@type".into(), json!("PartialDate"));
+                for (key, part) in [("year", year), ("month", month), ("day", day)] {
+                    if let Some(part) = part {
+                        date.insert(key.into(), json!(part));
+                    }
+                }
+                Value::Object(date)
+            }
+            AnniversaryDate::Utc(utc) => json!({"@type": "Timestamp", "utc": utc}),
+        }
+    }
+}
+
+/// One of a card's `Id`-keyed lists an update can change an entry of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum EntryList {
+    Emails,
+    Phones,
+    OnlineServices,
+    Addresses,
+    Organizations,
+    Titles,
+    Nicknames,
+    Anniversaries,
+    Notes,
+}
+
+impl EntryList {
+    pub const ALL: [EntryList; 9] = [
+        EntryList::Emails,
+        EntryList::Phones,
+        EntryList::OnlineServices,
+        EntryList::Addresses,
+        EntryList::Organizations,
+        EntryList::Titles,
+        EntryList::Nicknames,
+        EntryList::Anniversaries,
+        EntryList::Notes,
+    ];
+
+    /// The card's property (RFC 9553).
+    pub fn property(self) -> &'static str {
+        match self {
+            EntryList::Emails => "emails",
+            EntryList::Phones => "phones",
+            EntryList::OnlineServices => "onlineServices",
+            EntryList::Addresses => "addresses",
+            EntryList::Organizations => "organizations",
+            EntryList::Titles => "titles",
+            EntryList::Nicknames => "nicknames",
+            EntryList::Anniversaries => "anniversaries",
+            EntryList::Notes => "notes",
+        }
+    }
+
+    /// The entry's sub-property holding its main value.
+    fn value_property(self) -> &'static str {
+        match self {
+            EntryList::Emails => "address",
+            EntryList::Phones => "number",
+            EntryList::OnlineServices => "uri",
+            EntryList::Addresses => "full",
+            EntryList::Organizations | EntryList::Titles | EntryList::Nicknames => "name",
+            EntryList::Anniversaries => "date",
+            EntryList::Notes => "note",
+        }
+    }
+}
+
+/// An entry's main value: text, or an anniversary's date.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EntryValue {
+    Text(String),
+    Date(AnniversaryDate),
+}
+
+/// The sub-properties one entry change names; each `None` is left alone.
+/// Which a list takes is the caller's to hold.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EntryFields {
+    pub value: Option<EntryValue>,
+    pub label: Option<String>,
+    /// The whole context set.
+    pub contexts: Option<Vec<String>>,
+    /// The whole feature set.
+    pub features: Option<Vec<String>>,
+    pub pref: Option<u64>,
+    pub kind: Option<String>,
+    pub service: Option<String>,
+    pub user: Option<String>,
+    pub country_code: Option<String>,
+}
+
+impl EntryFields {
+    /// An entry holding only `value`.
+    pub fn of_value(value: EntryValue) -> EntryFields {
+        EntryFields {
+            value: Some(value),
+            ..EntryFields::default()
+        }
+    }
+
+    /// `(sub-property, value)` for each field given, in a fixed order; a set
+    /// is written `{"<member>": true, ...}`.
+    pub fn pairs(&self, list: EntryList) -> Vec<(&'static str, Value)> {
+        let set = |members: &[String]| -> Value {
+            Value::Object(
+                members
+                    .iter()
+                    .map(|member| (member.clone(), Value::Bool(true)))
+                    .collect(),
+            )
+        };
+        let mut pairs = Vec::new();
+        if let Some(value) = &self.value {
+            let value = match value {
+                EntryValue::Text(text) => json!(text),
+                EntryValue::Date(date) => date.to_value(),
+            };
+            pairs.push((list.value_property(), value));
+        }
+        let texts = [
+            ("label", &self.label),
+            ("kind", &self.kind),
+            ("service", &self.service),
+            ("user", &self.user),
+            ("countryCode", &self.country_code),
+        ];
+        for (key, text) in texts {
+            if let Some(text) = text {
+                pairs.push((key, json!(text)));
+            }
+        }
+        if let Some(contexts) = &self.contexts {
+            pairs.push(("contexts", set(contexts)));
+        }
+        if let Some(features) = &self.features {
+            pairs.push(("features", set(features)));
+        }
+        if let Some(pref) = self.pref {
+            pairs.push(("pref", json!(pref)));
+        }
+        pairs
+    }
+
+    /// The entry object an add writes: exactly the fields given.
+    pub fn entry(&self, list: EntryList) -> Value {
+        Value::Object(
+            self.pairs(list)
+                .into_iter()
+                .map(|(key, value)| (key.to_owned(), value))
+                .collect(),
+        )
+    }
+}
+
+/// One change to one entry of a list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EntryChange {
+    Add(EntryFields),
+    Edit { key: String, fields: EntryFields },
+    Remove { key: String },
+}
+
+impl EntryChange {
+    /// `patch` with this change to `list` added, given the keys the card
+    /// holds there (`None` when the card has no such property), and the new
+    /// entry's key on an add. An add to an absent property writes the whole
+    /// property, since a patch path's parent must exist (RFC 8620 section
+    /// 5.3); the new key is `k<n>` for the smallest `n` not held. An edit
+    /// writes each sub-property given at its own path, and an edit of an
+    /// address's text clears the parts that would contradict it. `None` when
+    /// an edit or remove names a key the card does not hold.
+    pub fn patch(
+        &self,
+        list: EntryList,
+        held: Option<&BTreeSet<String>>,
+        patch: Patch,
+    ) -> Option<(Patch, Option<String>)> {
+        let property = list.property();
+        match self {
+            EntryChange::Add(fields) => {
+                let key = (1..)
+                    .map(|n| format!("k{n}"))
+                    .find(|key| held.is_none_or(|held| !held.contains(key)))
+                    .expect("an unbounded range holds a free key");
+                let patch = match held {
+                    Some(_) => patch.at(&[property, &key], fields.entry(list)),
+                    None => patch.property(property, json!({ key.as_str(): fields.entry(list) })),
+                };
+                Some((patch, Some(key)))
+            }
+            EntryChange::Edit { key, fields } => {
+                held?.get(key)?;
+                let mut patch = patch;
+                for (sub, value) in fields.pairs(list) {
+                    patch = patch.at(&[property, key, sub], value);
+                }
+                if list == EntryList::Addresses && fields.value.is_some() {
+                    for sub in ["components", "isOrdered", "defaultSeparator"] {
+                        patch = patch.at(&[property, key, sub], Value::Null);
+                    }
+                }
+                Some((patch, None))
+            }
+            EntryChange::Remove { key } => {
+                held?.get(key)?;
+                Some((patch.at(&[property, key], Value::Null), None))
+            }
+        }
+    }
+}
+
+/// A card's `name` change: `full` and the `given` and `surname` parts.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NameChange {
+    pub full: Option<String>,
+    pub given: Option<String>,
+    pub surname: Option<String>,
+}
+
+/// Why a name change cannot be written to a card's `name` without guessing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NameRefusal {
+    /// A part change without `full`, on a name whose non-empty `full` is
+    /// what a reader shows instead of the parts.
+    FullHidesParts,
+    /// The name holds more than one component of this kind.
+    Ambiguous(&'static str),
+    /// The name lacks this kind and is ordered, so the part has no place.
+    Unplaceable(&'static str),
+}
+
+impl NameChange {
+    fn parts(&self) -> impl Iterator<Item = (&'static str, &str)> {
+        [("given", &self.given), ("surname", &self.surname)]
+            .into_iter()
+            .filter_map(|(kind, value)| value.as_deref().map(|value| (kind, value)))
+    }
+
+    /// The whole `name` property: `full` and the components given, `given`
+    /// before `surname`.
+    pub fn to_value(&self) -> Value {
+        let mut name = Map::new();
+        if let Some(full) = &self.full {
+            name.insert("full".into(), json!(full));
+        }
+        let components: Vec<Value> = self
+            .parts()
+            .map(|(kind, value)| json!({"kind": kind, "value": value}))
+            .collect();
+        if !components.is_empty() {
+            name.insert("components".into(), Value::Array(components));
+        }
+        Value::Object(name)
+    }
+
+    /// `patch` with this change added. With no `name` on the card, the whole
+    /// property. Otherwise `name/full` for `full`, and for a part
+    /// `name/components` rewritten whole, since a patch path cannot point
+    /// into an array (RFC 8620 section 5.3): every component carried through
+    /// as the server sent it, the one of the part's kind with its `value`
+    /// replaced, and a kind the name lacks appended. Nothing else of the name
+    /// is written.
+    pub fn patch(&self, state: Option<&NameState>, patch: Patch) -> Result<Patch, NameRefusal> {
+        let Some(state) = state else {
+            return Ok(patch.property("name", self.to_value()));
+        };
+        let mut patch = patch;
+        if let Some(full) = &self.full {
+            patch = patch.at(&["name", "full"], json!(full));
+        }
+        if self.parts().next().is_none() {
+            return Ok(patch);
+        }
+        if self.full.is_none() && state.has_full {
+            return Err(NameRefusal::FullHidesParts);
+        }
+        let mut components = state.components.clone();
+        for (kind, value) in self.parts() {
+            let mut of_kind = components
+                .iter_mut()
+                .filter(|component| component["kind"] == kind);
+            match (of_kind.next(), of_kind.next()) {
+                (Some(_), Some(_)) => return Err(NameRefusal::Ambiguous(kind)),
+                (Some(component), None) => component["value"] = json!(value),
+                (None, _) if state.is_ordered => return Err(NameRefusal::Unplaceable(kind)),
+                (None, _) => components.push(json!({"kind": kind, "value": value})),
+            }
+        }
+        Ok(patch.at(&["name", "components"], Value::Array(components)))
+    }
+}
+
+/// A card's `name` as an update reads it to patch it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NameState {
+    /// Whether `full` is a non-empty string.
+    pub has_full: bool,
+    /// The components as the server sent them, each an object with a string
+    /// `kind`.
+    pub components: Vec<Value>,
+    pub is_ordered: bool,
+}
+
+impl NameState {
+    fn read(value: &Value) -> Result<NameState, Error> {
+        let f = Fields::of(value, "ContactCard.name")?;
+        let components = f.list("components", |component| {
+            Fields::of(component, "ContactCard.name.components")?.string("kind")?;
+            Ok(component.clone())
+        })?;
+        Ok(NameState {
+            has_full: f.opt_string("full")?.is_some_and(|full| !full.is_empty()),
+            components,
+            is_ordered: f.opt_bool("isOrdered")?.unwrap_or(false),
+        })
+    }
+}
+
+/// What an update reads of a card to patch it: per list present, its keys,
+/// and its `name`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CardKeys {
+    pub id: String,
+    lists: BTreeMap<EntryList, BTreeSet<String>>,
+    pub name: Option<NameState>,
+}
+
+impl CardKeys {
+    /// A `ContactCard/get` result's `state` and its cards. A property absent
+    /// or null reads as not present.
+    pub fn get(args: &Value) -> Result<(String, GetResult<CardKeys>), Error> {
+        let state = Fields::of(args, "get result")?.string("state")?;
+        Ok((state, read_get(args, CardKeys::read)?))
+    }
+
+    /// The keys the card holds in `list`; `None` when the property is not
+    /// present.
+    pub fn keys(&self, list: EntryList) -> Option<&BTreeSet<String>> {
+        self.lists.get(&list)
+    }
+
+    fn read(value: &Value) -> Result<CardKeys, Error> {
+        let f = Fields::of(value, "ContactCard")?;
+        let mut lists = BTreeMap::new();
+        for list in EntryList::ALL {
+            if let Some(map) = f.get(list.property()) {
+                let keys = map
+                    .as_object()
+                    .ok_or_else(|| f.shape(list.property(), "is not an object"))?
+                    .keys()
+                    .cloned()
+                    .collect();
+                lists.insert(list, keys);
+            }
+        }
+        Ok(CardKeys {
+            id: f.string("id")?,
+            lists,
+            name: f.get("name").map(NameState::read).transpose()?,
+        })
+    }
+}
+
+/// A new individual card (RFC 9553 section 2): its uid, its one address
+/// book, its name, and bare values for lists, each entry holding its main
+/// value only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewCard {
+    pub uid: String,
+    pub address_book: String,
+    pub name: Option<NameChange>,
+    /// Each list's values, entry keys `k1`, `k2`, … in order.
+    pub lists: Vec<(EntryList, Vec<String>)>,
+    pub birthday: Option<AnniversaryDate>,
+}
+
+impl NewCard {
+    pub fn to_value(&self) -> Value {
+        let mut card = Map::new();
+        card.insert("@type".into(), json!("Card"));
+        card.insert("version".into(), json!("1.0"));
+        card.insert("uid".into(), json!(self.uid));
+        card.insert(
+            "addressBookIds".into(),
+            json!({ self.address_book.as_str(): true }),
+        );
+        if let Some(name) = &self.name {
+            card.insert("name".into(), name.to_value());
+        }
+        for (list, values) in &self.lists {
+            let entries: Map<String, Value> = values
+                .iter()
+                .enumerate()
+                .map(|(i, value)| {
+                    let fields = EntryFields::of_value(EntryValue::Text(value.clone()));
+                    (format!("k{}", i + 1), fields.entry(*list))
+                })
+                .collect();
+            card.insert(list.property().into(), Value::Object(entries));
+        }
+        if let Some(birthday) = &self.birthday {
+            let fields = EntryFields {
+                kind: Some("birth".into()),
+                ..EntryFields::of_value(EntryValue::Date(birthday.clone()))
+            };
+            card.insert(
+                EntryList::Anniversaries.property().into(),
+                json!({"k1": fields.entry(EntryList::Anniversaries)}),
+            );
+        }
+        Value::Object(card)
+    }
+}
+
+/// `ContactCard/set` (RFC 9610 section 3.4): creates and updates. Nothing
+/// here destroys.
+#[derive(Debug, Clone)]
+pub struct ContactCardSet<'a> {
+    pub account_id: &'a str,
+    /// The state the update was computed against; the server refuses the
+    /// whole method with `stateMismatch` when the account has moved on.
+    pub if_in_state: Option<&'a str>,
+    /// Creation id → the new card.
+    pub create: Vec<(String, NewCard)>,
+    /// Card id → its patch.
+    pub update: Vec<(String, Patch)>,
+}
+
+impl ContactCardSet<'_> {
+    pub const METHOD: &'static str = "ContactCard/set";
+
+    pub fn args(&self) -> Value {
+        set_args(
+            self.account_id,
+            self.create
+                .iter()
+                .map(|(cid, card)| (cid.clone(), card.to_value())),
+            &self.update,
+            self.if_in_state,
+        )
+    }
+
+    pub fn push(&self, request: &mut Request) -> CallId {
+        request.push(Self::METHOD, self.args())
+    }
+
+    /// Reads the result of a `ContactCard/set`.
+    pub fn result(args: &Value) -> Result<SetResult<CardCreated>, Error> {
+        SetResult::read(args, CardCreated::read)
+    }
+}
+
+/// What the server set on a created card that this crate reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CardCreated {
+    pub id: String,
+}
+
+impl CardCreated {
+    fn read(value: &Value) -> Result<CardCreated, Error> {
+        Ok(CardCreated {
+            id: Fields::of(value, "created ContactCard")?.string("id")?,
         })
     }
 }
@@ -628,30 +1176,37 @@ fn held(f: &Fields<'_>, key: &str) -> Result<Vec<String>, Error> {
         .collect())
 }
 
-/// An `Id`-keyed map's entries through `read`, by key.
+/// `list`'s entries through `read`, each handed its key, by key.
 fn in_key_order<T>(
     f: &Fields<'_>,
-    key: &str,
-    read: fn(&Value) -> Result<T, Error>,
-) -> Result<Vec<(String, T)>, Error> {
-    Ok(f.map(key, read)?.into_iter().collect())
+    list: EntryList,
+    read: fn(String, &Value) -> Result<T, Error>,
+) -> Result<Vec<T>, Error> {
+    let key = list.property();
+    let Some(map) = f.get(key) else {
+        return Ok(Vec::new());
+    };
+    let map: BTreeMap<&String, &Value> = map
+        .as_object()
+        .ok_or_else(|| f.shape(key, "is not an object"))?
+        .iter()
+        .collect();
+    map.into_iter()
+        .map(|(entry_key, value)| read(entry_key.clone(), value))
+        .collect()
 }
 
-/// An `Id`-keyed map's values through `read`, by `pref` ascending, entries
-/// without `pref` last, ties by key.
+/// `list`'s entries through `read`, by `pref` ascending, entries without
+/// `pref` last, ties by key.
 fn by_pref<T>(
     f: &Fields<'_>,
-    key: &str,
-    read: fn(&Value) -> Result<T, Error>,
+    list: EntryList,
+    read: fn(String, &Value) -> Result<T, Error>,
     pref: fn(&T) -> Option<u64>,
 ) -> Result<Vec<T>, Error> {
-    let mut entries = values(in_key_order(f, key, read)?);
+    let mut entries = in_key_order(f, list, read)?;
     entries.sort_by_key(|entry| (pref(entry).is_none(), pref(entry)));
     Ok(entries)
-}
-
-fn values<T>(entries: Vec<(String, T)>) -> Vec<T> {
-    entries.into_iter().map(|(_, value)| value).collect()
 }
 
 #[cfg(test)]
@@ -910,26 +1465,39 @@ mod tests {
                 is_ordered: true,
                 default_separator: None,
             }),
-            nicknames: strings(&["JQ", "Johnny"]),
+            nicknames: vec![
+                Nickname {
+                    key: "k392".into(),
+                    name: "JQ".into(),
+                    pref: Some(1),
+                },
+                Nickname {
+                    key: "k391".into(),
+                    name: "Johnny".into(),
+                    pref: None,
+                },
+            ],
             organizations: vec![
                 Organization {
-                    id: "o1".into(),
+                    key: "o1".into(),
                     name: None,
                     units: strings(&["Volunteers"]),
                 },
                 Organization {
-                    id: "o2".into(),
+                    key: "o2".into(),
                     name: Some("ABC, Inc.".into()),
                     units: strings(&["North American Division", "Marketing"]),
                 },
             ],
             titles: vec![
                 Title {
+                    key: "k2".into(),
                     name: "Treasurer".into(),
                     kind: "title".into(),
                     organization_id: None,
                 },
                 Title {
+                    key: "le9".into(),
                     name: "Project Leader".into(),
                     kind: "title".into(),
                     organization_id: Some("o2".into()),
@@ -937,18 +1505,21 @@ mod tests {
             ],
             emails: vec![
                 CardEmail {
+                    key: "e3".into(),
                     address: "alice@example.com".into(),
                     contexts: strings(&["private"]),
                     label: Some("home".into()),
                     pref: Some(1),
                 },
                 CardEmail {
+                    key: "e2".into(),
                     address: "jane_doe@example.com".into(),
                     contexts: vec![],
                     label: None,
                     pref: Some(2),
                 },
                 CardEmail {
+                    key: "e1".into(),
                     address: "jqpublic@xyz.example.com".into(),
                     contexts: strings(&["work"]),
                     label: None,
@@ -957,6 +1528,7 @@ mod tests {
             ],
             phones: vec![
                 Phone {
+                    key: "tel0".into(),
                     number: "tel:+1-555-555-5555;ext=5555".into(),
                     features: strings(&["voice"]),
                     contexts: strings(&["private"]),
@@ -964,6 +1536,7 @@ mod tests {
                     pref: Some(1),
                 },
                 Phone {
+                    key: "tel3".into(),
                     number: "tel:+1-201-555-0123".into(),
                     features: strings(&["text", "voice"]),
                     contexts: strings(&["work"]),
@@ -972,6 +1545,7 @@ mod tests {
                 },
             ],
             online_services: vec![OnlineService {
+                key: "x-social".into(),
                 service: Some("Mastodon".into()),
                 uri: Some("https://example2.com/@alice".into()),
                 user: Some("@alice@example2.com".into()),
@@ -981,11 +1555,13 @@ mod tests {
             }],
             addresses: vec![
                 PostalAddress {
+                    key: "k24".into(),
                     full: Some("4445 Tree Street\nNew England, ND 58647\nUSA".into()),
                     pref: Some(1),
                     ..PostalAddress::default()
                 },
                 PostalAddress {
+                    key: "k23".into(),
                     full: None,
                     components: vec![
                         component("number", "54321"),
@@ -1006,28 +1582,34 @@ mod tests {
             ],
             anniversaries: vec![
                 Anniversary {
+                    key: "k10".into(),
                     kind: "wedding".into(),
                     date: partial(None, Some(6), Some(21)),
                 },
                 Anniversary {
+                    key: "k11".into(),
                     kind: "x-graduation".into(),
                     date: partial(Some(1975), None, None),
                 },
                 Anniversary {
+                    key: "k8".into(),
                     kind: "birth".into(),
                     date: partial(Some(1953), Some(4), Some(15)),
                 },
                 Anniversary {
+                    key: "k9".into(),
                     kind: "death".into(),
                     date: AnniversaryDate::Utc("2019-10-15T23:10:00Z".into()),
                 },
             ],
             notes: vec![
                 Note {
+                    key: "n1".into(),
                     note: "Open office hours are 1600 to 1715 EST, Mon-Fri".into(),
                     created: Some("2022-11-23T15:01:32Z".into()),
                 },
                 Note {
+                    key: "n2".into(),
                     note: "Prefers \"JQ\".\nCall after 10.".into(),
                     created: None,
                 },
@@ -1113,6 +1695,8 @@ mod tests {
         }))
         .unwrap();
         let addresses: Vec<&str> = read.emails.iter().map(|e| e.address.as_str()).collect();
+        let keys: Vec<&str> = read.emails.iter().map(|e| e.key.as_str()).collect();
+        assert_eq!(keys, ["d", "b", "e", "a", "c"]);
         assert_eq!(
             addresses,
             [
@@ -1208,7 +1792,7 @@ mod tests {
         assert_eq!(
             read.organizations,
             vec![Organization {
-                id: "o1".into(),
+                key: "o1".into(),
                 name: None,
                 units: strings(&["Sales", "East"]),
             }]
@@ -1383,5 +1967,530 @@ mod tests {
         .unwrap();
         assert_eq!(read.id, "c1");
         assert_eq!(read.kind, "individual");
+    }
+
+    #[test]
+    fn a_partial_date_parses_each_iso_form_and_refuses_the_rest() {
+        for (text, expected) in [
+            ("1953", partial(Some(1953), None, None)),
+            ("1953-04", partial(Some(1953), Some(4), None)),
+            ("1953-04-15", partial(Some(1953), Some(4), Some(15))),
+            ("--12-31", partial(None, Some(12), Some(31))),
+            ("0000-01-01", partial(Some(0), Some(1), Some(1))),
+        ] {
+            assert_eq!(
+                AnniversaryDate::parse_partial(text),
+                Some(expected),
+                "{text}"
+            );
+        }
+        for text in [
+            "",
+            "195",
+            "19530",
+            "1953-4",
+            "1953-04-5",
+            "1953-13",
+            "1953-00",
+            "1953-04-32",
+            "1953-04-00",
+            "--04",
+            "--13-01",
+            "--04-15-1",
+            "1953-04-15-1",
+            "+953",
+            "1953--04",
+            "--",
+            "abcd",
+            "1953-0a",
+        ] {
+            assert_eq!(AnniversaryDate::parse_partial(text), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn a_partial_date_reads_back_the_text_it_is_written_as() {
+        for text in ["1953", "1953-04", "1953-04-15", "--04-15", "0000-01-01"] {
+            let date = AnniversaryDate::parse_partial(text).expect("a partial date");
+            assert_eq!(date.to_text(), text);
+        }
+        let utc = AnniversaryDate::Utc("1953-04-15T00:00:00Z".to_owned());
+        assert_eq!(utc.to_text(), "1953-04-15T00:00:00Z");
+    }
+
+    #[test]
+    fn a_date_is_written_as_jscontact_types_it() {
+        assert_eq!(
+            partial(Some(1953), Some(4), Some(15)).to_value(),
+            json!({"@type": "PartialDate", "year": 1953, "month": 4, "day": 15})
+        );
+        assert_eq!(
+            partial(None, Some(6), Some(21)).to_value(),
+            json!({"@type": "PartialDate", "month": 6, "day": 21})
+        );
+        assert_eq!(
+            AnniversaryDate::Utc("2019-10-15T23:10:00Z".into()).to_value(),
+            json!({"@type": "Timestamp", "utc": "2019-10-15T23:10:00Z"})
+        );
+    }
+
+    fn text(value: &str) -> Option<EntryValue> {
+        Some(EntryValue::Text(value.into()))
+    }
+
+    /// Every field given, the value as `list` takes it.
+    fn every_field(list: EntryList) -> EntryFields {
+        EntryFields {
+            value: match list {
+                EntryList::Anniversaries => Some(EntryValue::Date(partial(Some(1990), None, None))),
+                _ => text("v"),
+            },
+            label: Some("home".into()),
+            contexts: Some(strings(&["private", "work"])),
+            features: Some(strings(&["voice"])),
+            pref: Some(3),
+            kind: Some("role".into()),
+            service: Some("Mastodon".into()),
+            user: Some("@alice".into()),
+            country_code: Some("US".into()),
+        }
+    }
+
+    #[test]
+    fn each_list_names_its_main_value_by_its_jscontact_sub_property() {
+        let expected = [
+            (EntryList::Emails, "emails", "address"),
+            (EntryList::Phones, "phones", "number"),
+            (EntryList::OnlineServices, "onlineServices", "uri"),
+            (EntryList::Addresses, "addresses", "full"),
+            (EntryList::Organizations, "organizations", "name"),
+            (EntryList::Titles, "titles", "name"),
+            (EntryList::Nicknames, "nicknames", "name"),
+            (EntryList::Anniversaries, "anniversaries", "date"),
+            (EntryList::Notes, "notes", "note"),
+        ];
+        assert_eq!(expected.map(|(list, ..)| list), EntryList::ALL);
+        for (list, property, value) in expected {
+            assert_eq!(list.property(), property);
+            let fields = every_field(list);
+            let main = match list {
+                EntryList::Anniversaries => json!({"@type": "PartialDate", "year": 1990}),
+                _ => json!("v"),
+            };
+            assert_eq!(
+                fields.entry(list),
+                json!({
+                    value: main, "label": "home", "kind": "role", "service": "Mastodon",
+                    "user": "@alice", "countryCode": "US",
+                    "contexts": {"private": true, "work": true}, "features": {"voice": true},
+                    "pref": 3
+                }),
+                "{property}"
+            );
+            let held = BTreeSet::from(["e1".to_owned()]);
+            let edit = EntryChange::Edit {
+                key: "e1".into(),
+                fields: EntryFields {
+                    value: fields.value.clone(),
+                    ..EntryFields::default()
+                },
+            };
+            let (patch, key) = edit.patch(list, Some(&held), Patch::new()).unwrap();
+            assert_eq!(key, None);
+            let mut paths = json!({ format!("{property}/e1/{value}"): main });
+            if list == EntryList::Addresses {
+                for sub in ["components", "isOrdered", "defaultSeparator"] {
+                    paths[format!("addresses/e1/{sub}")] = Value::Null;
+                }
+            }
+            assert_eq!(patch.to_value(), paths, "{property}");
+        }
+        assert_eq!(EntryFields::default().entry(EntryList::Emails), json!({}));
+    }
+
+    #[test]
+    fn an_add_takes_the_smallest_free_key_and_writes_an_absent_list_whole() {
+        let add = EntryChange::Add(EntryFields {
+            value: text("alice@example.com"),
+            label: Some("home".into()),
+            ..EntryFields::default()
+        });
+        let entry = json!({"address": "alice@example.com", "label": "home"});
+        let held = BTreeSet::from(["k1".to_owned(), "k3".to_owned(), "x".to_owned()]);
+        let (patch, key) = add
+            .patch(EntryList::Emails, Some(&held), Patch::new())
+            .unwrap();
+        assert_eq!(key.as_deref(), Some("k2"));
+        assert_eq!(patch.to_value(), json!({"emails/k2": entry}));
+        let (patch, key) = add
+            .patch(EntryList::Emails, Some(&BTreeSet::new()), Patch::new())
+            .unwrap();
+        assert_eq!(key.as_deref(), Some("k1"));
+        assert_eq!(patch.to_value(), json!({"emails/k1": entry}));
+        let (patch, key) = add.patch(EntryList::Emails, None, Patch::new()).unwrap();
+        assert_eq!(key.as_deref(), Some("k1"));
+        assert_eq!(patch.to_value(), json!({"emails": {"k1": entry}}));
+    }
+
+    #[test]
+    fn an_edit_writes_only_the_sub_properties_named_and_a_remove_only_the_entry() {
+        let held = BTreeSet::from(["e/1".to_owned(), "e2".to_owned()]);
+        let edit = EntryChange::Edit {
+            key: "e/1".into(),
+            fields: EntryFields {
+                contexts: Some(strings(&["work"])),
+                pref: Some(1),
+                ..EntryFields::default()
+            },
+        };
+        let base = Patch::new().at(&["name", "full"], json!("Alice"));
+        let (patch, _) = edit.patch(EntryList::Phones, Some(&held), base).unwrap();
+        assert_eq!(
+            patch.to_value(),
+            json!({
+                "name/full": "Alice",
+                "phones/e~11/contexts": {"work": true},
+                "phones/e~11/pref": 1
+            })
+        );
+        let edit = EntryChange::Edit {
+            key: "e2".into(),
+            fields: EntryFields {
+                country_code: Some("US".into()),
+                ..EntryFields::default()
+            },
+        };
+        let (patch, _) = edit
+            .patch(EntryList::Addresses, Some(&held), Patch::new())
+            .unwrap();
+        assert_eq!(patch.to_value(), json!({"addresses/e2/countryCode": "US"}));
+        let remove = EntryChange::Remove { key: "e2".into() };
+        let (patch, key) = remove
+            .patch(EntryList::Notes, Some(&held), Patch::new())
+            .unwrap();
+        assert_eq!(key, None);
+        assert_eq!(patch.to_value(), json!({"notes/e2": null}));
+        for change in [
+            EntryChange::Remove { key: "e3".into() },
+            EntryChange::Edit {
+                key: "e3".into(),
+                fields: EntryFields::of_value(EntryValue::Text("x".into())),
+            },
+        ] {
+            assert_eq!(
+                change.patch(EntryList::Notes, Some(&held), Patch::new()),
+                None
+            );
+            assert_eq!(change.patch(EntryList::Notes, None, Patch::new()), None);
+        }
+    }
+
+    fn name_state(name: Value) -> NameState {
+        let (_, mut cards) = CardKeys::get(&json!({
+            "state": "s1", "list": [{"id": "c1", "name": name}], "notFound": []
+        }))
+        .unwrap();
+        cards.list.remove(0).name.unwrap()
+    }
+
+    fn change(full: Option<&str>, given: Option<&str>, surname: Option<&str>) -> NameChange {
+        NameChange {
+            full: full.map(str::to_owned),
+            given: given.map(str::to_owned),
+            surname: surname.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn a_name_change_on_a_card_without_a_name_writes_the_whole_property() {
+        let name = change(Some("Alice Example"), Some("Alice"), Some("Example"));
+        let whole = json!({"full": "Alice Example", "components": [
+            {"kind": "given", "value": "Alice"}, {"kind": "surname", "value": "Example"}
+        ]});
+        assert_eq!(name.to_value(), whole);
+        assert_eq!(
+            name.patch(None, Patch::new()).unwrap().to_value(),
+            json!({"name": whole})
+        );
+        assert_eq!(
+            change(None, None, Some("Example")).to_value(),
+            json!({"components": [{"kind": "surname", "value": "Example"}]})
+        );
+        assert_eq!(
+            change(Some("A"), None, None).to_value(),
+            json!({"full": "A"})
+        );
+    }
+
+    #[test]
+    fn a_name_change_patches_full_and_rewrites_only_the_named_components() {
+        let held = name_state(json!({
+            "full": "Dr. Alice B. Example PhD",
+            "sortAs": {"surname": "Example"},
+            "isOrdered": false,
+            "example.com:vendor": 1,
+            "components": [
+                {"kind": "title", "value": "Dr."},
+                {"kind": "given", "value": "Alice"},
+                {"kind": "surname", "value": "Example", "phonetic": "eg-zam-pul"},
+                {"kind": "credential", "value": "PhD", "example.com:x": true}
+            ]
+        }));
+        assert_eq!(
+            change(Some("Alice Sample"), None, None)
+                .patch(Some(&held), Patch::new())
+                .unwrap()
+                .to_value(),
+            json!({"name/full": "Alice Sample"})
+        );
+        assert_eq!(
+            change(Some("Dr. Alice Sample PhD"), None, Some("Sample"))
+                .patch(Some(&held), Patch::new())
+                .unwrap()
+                .to_value(),
+            json!({
+                "name/full": "Dr. Alice Sample PhD",
+                "name/components": [
+                    {"kind": "title", "value": "Dr."},
+                    {"kind": "given", "value": "Alice"},
+                    {"kind": "surname", "value": "Sample", "phonetic": "eg-zam-pul"},
+                    {"kind": "credential", "value": "PhD", "example.com:x": true}
+                ]
+            })
+        );
+        let unordered = name_state(json!({"components": [{"kind": "surname", "value": "E"}]}));
+        assert_eq!(
+            change(None, Some("Alice"), Some("Example"))
+                .patch(Some(&unordered), Patch::new())
+                .unwrap()
+                .to_value(),
+            json!({"name/components": [
+                {"kind": "surname", "value": "Example"}, {"kind": "given", "value": "Alice"}
+            ]})
+        );
+        let bare = name_state(json!({"full": ""}));
+        assert_eq!(
+            change(None, Some("Alice"), Some("Example"))
+                .patch(Some(&bare), Patch::new())
+                .unwrap()
+                .to_value(),
+            json!({"name/components": [
+                {"kind": "given", "value": "Alice"}, {"kind": "surname", "value": "Example"}
+            ]})
+        );
+    }
+
+    #[test]
+    fn a_name_change_that_would_be_a_guess_is_refused() {
+        let full = name_state(json!({"full": "Alice Example", "components": [
+            {"kind": "given", "value": "Alice"}
+        ]}));
+        assert_eq!(
+            change(None, Some("Al"), None).patch(Some(&full), Patch::new()),
+            Err(NameRefusal::FullHidesParts)
+        );
+        let twice = name_state(json!({"components": [
+            {"kind": "surname", "value": "A"}, {"kind": "surname", "value": "B"}
+        ]}));
+        assert_eq!(
+            change(Some("X"), None, Some("C")).patch(Some(&twice), Patch::new()),
+            Err(NameRefusal::Ambiguous("surname"))
+        );
+        let ordered = name_state(json!({"isOrdered": true, "components": [
+            {"kind": "given", "value": "Alice"}
+        ]}));
+        assert_eq!(
+            change(Some("Alice Example"), Some("Alice"), Some("Example"))
+                .patch(Some(&ordered), Patch::new()),
+            Err(NameRefusal::Unplaceable("surname"))
+        );
+        let ordered_empty = name_state(json!({"isOrdered": true}));
+        assert_eq!(
+            change(None, Some("Alice"), None).patch(Some(&ordered_empty), Patch::new()),
+            Err(NameRefusal::Unplaceable("given"))
+        );
+    }
+
+    #[test]
+    fn card_keys_read_the_state_each_present_lists_keys_and_the_name() {
+        let (state, result) = CardKeys::get(&json!({
+            "accountId": "a1", "state": "s9", "notFound": ["c9"],
+            "list": [
+                {"id": "c1", "emails": {"e1": {"address": "a"}, "e2": {}}, "phones": null,
+                 "onlineServices": {}, "name": {"full": "Alice", "isOrdered": true,
+                 "components": [{"kind": "given", "value": "Alice", "phonetic": "a"}]}},
+                {"id": "c2"}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(state, "s9");
+        assert_eq!(result.not_found, strings(&["c9"]));
+        let card = &result.list[0];
+        assert_eq!(card.id, "c1");
+        assert_eq!(
+            card.keys(EntryList::Emails),
+            Some(&BTreeSet::from(["e1".to_owned(), "e2".to_owned()]))
+        );
+        assert_eq!(card.keys(EntryList::OnlineServices), Some(&BTreeSet::new()));
+        assert_eq!(card.keys(EntryList::Phones), None);
+        assert_eq!(card.keys(EntryList::Notes), None);
+        assert_eq!(
+            card.name,
+            Some(NameState {
+                has_full: true,
+                components: vec![json!({"kind": "given", "value": "Alice", "phonetic": "a"})],
+                is_ordered: true,
+            })
+        );
+        let bare = &result.list[1];
+        assert!(EntryList::ALL.iter().all(|&list| bare.keys(list).is_none()));
+        assert_eq!(bare.name, None);
+    }
+
+    #[test]
+    fn card_keys_of_the_wrong_shape_are_malformed() {
+        let get = |card: Value| json!({"state": "s1", "list": [card], "notFound": []});
+        for args in [
+            json!({"list": [{"id": "c1"}], "notFound": []}),
+            json!({"state": 7, "list": [], "notFound": []}),
+            get(json!({"emails": {}})),
+            get(json!({"id": "c1", "emails": []})),
+            get(json!({"id": "c1", "anniversaries": "x"})),
+            get(json!({"id": "c1", "name": "Alice"})),
+            get(json!({"id": "c1", "name": {"full": 7}})),
+            get(json!({"id": "c1", "name": {"isOrdered": "yes"}})),
+            get(json!({"id": "c1", "name": {"components": {}}})),
+            get(json!({"id": "c1", "name": {"components": ["given"]}})),
+            get(json!({"id": "c1", "name": {"components": [{"value": "Alice"}]}})),
+            get(json!({"id": "c1", "name": {"components": [{"kind": 1}]}})),
+        ] {
+            assert!(
+                matches!(CardKeys::get(&args), Err(Error::Shape(_))),
+                "{args}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_new_card_carries_the_mandatory_properties_and_bare_entries() {
+        let full = NewCard {
+            uid: "urn:uuid:0".into(),
+            address_book: "b1".into(),
+            name: Some(change(
+                Some("Alice Example"),
+                Some("Alice"),
+                Some("Example"),
+            )),
+            lists: vec![
+                (EntryList::Emails, strings(&["alice@example.com"])),
+                (EntryList::Phones, strings(&["+1 555 0100", "+1 555 0101"])),
+                (
+                    EntryList::OnlineServices,
+                    strings(&["https://example.com/@alice"]),
+                ),
+                (EntryList::Addresses, strings(&["1 Main St\nSpringfield"])),
+                (EntryList::Organizations, strings(&["Example Inc."])),
+                (EntryList::Titles, strings(&["Engineer"])),
+                (EntryList::Nicknames, strings(&["Al"])),
+                (EntryList::Notes, strings(&["Met at the conference."])),
+            ],
+            birthday: Some(partial(Some(1990), Some(4), Some(15))),
+        };
+        assert_eq!(
+            full.to_value(),
+            json!({
+                "@type": "Card", "version": "1.0", "uid": "urn:uuid:0",
+                "addressBookIds": {"b1": true},
+                "name": {"full": "Alice Example", "components": [
+                    {"kind": "given", "value": "Alice"}, {"kind": "surname", "value": "Example"}
+                ]},
+                "emails": {"k1": {"address": "alice@example.com"}},
+                "phones": {"k1": {"number": "+1 555 0100"}, "k2": {"number": "+1 555 0101"}},
+                "onlineServices": {"k1": {"uri": "https://example.com/@alice"}},
+                "addresses": {"k1": {"full": "1 Main St\nSpringfield"}},
+                "organizations": {"k1": {"name": "Example Inc."}},
+                "titles": {"k1": {"name": "Engineer"}},
+                "nicknames": {"k1": {"name": "Al"}},
+                "notes": {"k1": {"note": "Met at the conference."}},
+                "anniversaries": {"k1": {"kind": "birth", "date": {
+                    "@type": "PartialDate", "year": 1990, "month": 4, "day": 15
+                }}}
+            })
+        );
+        let minimal = NewCard {
+            uid: "urn:uuid:1".into(),
+            address_book: "b2".into(),
+            name: None,
+            lists: vec![(EntryList::Notes, strings(&["x"]))],
+            birthday: None,
+        };
+        assert_eq!(
+            minimal.to_value(),
+            json!({
+                "@type": "Card", "version": "1.0", "uid": "urn:uuid:1",
+                "addressBookIds": {"b2": true}, "notes": {"k1": {"note": "x"}}
+            })
+        );
+    }
+
+    #[test]
+    fn a_card_set_sends_its_creates_and_updates_and_reads_its_result() {
+        let mut request = Request::contacts();
+        let call = ContactCardSet {
+            account_id: "a1",
+            if_in_state: None,
+            create: vec![(
+                "contact".into(),
+                NewCard {
+                    uid: "urn:uuid:0".into(),
+                    address_book: "b1".into(),
+                    name: Some(change(Some("Alice"), None, None)),
+                    lists: vec![],
+                    birthday: None,
+                },
+            )],
+            update: vec![],
+        }
+        .push(&mut request);
+        assert_eq!(call.name(), "ContactCard/set");
+        ContactCardSet {
+            account_id: "a1",
+            if_in_state: Some("s9"),
+            create: vec![],
+            update: vec![(
+                "c1".into(),
+                Patch::new()
+                    .at(&["emails", "e1", "address"], json!("alice@example.com"))
+                    .at(&["addressBookIds", "b2"], json!(true)),
+            )],
+        }
+        .push(&mut request);
+        assert_eq!(
+            body(&request)["methodCalls"],
+            json!([
+                ["ContactCard/set", {"accountId": "a1", "create": {"contact": {
+                    "@type": "Card", "version": "1.0", "uid": "urn:uuid:0",
+                    "addressBookIds": {"b1": true}, "name": {"full": "Alice"}
+                }}}, "c0"],
+                ["ContactCard/set", {"accountId": "a1", "ifInState": "s9", "update": {"c1": {
+                    "emails/e1/address": "alice@example.com", "addressBookIds/b2": true
+                }}}, "c1"]
+            ])
+        );
+        let result = ContactCardSet::result(&json!({
+            "accountId": "a1", "oldState": "s1", "newState": "s2",
+            "created": {"contact": {"id": "c7", "uid": "urn:uuid:0"}},
+            "updated": {"c1": null}
+        }))
+        .unwrap();
+        assert_eq!(
+            result.created,
+            BTreeMap::from([("contact".to_owned(), CardCreated { id: "c7".into() })])
+        );
+        assert_eq!(result.updated, strings(&["c1"]));
+        assert!(matches!(
+            ContactCardSet::result(&json!({"created": {"contact": {}}})),
+            Err(Error::Shape(_))
+        ));
     }
 }

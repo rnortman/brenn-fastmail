@@ -28,9 +28,14 @@ pub const CALLER_ERRORS: &[&str] = &[
 
 // TODO(restart-wording-after-key-reload): say "reload" once a Brenn release
 // converges key files on reload, naming that version.
-/// What the operator does when the account's token cannot write.
-pub const READ_ONLY_TOKEN: &str = "the token for this account cannot write mail: the operator \
-     must replace its key file with a token that has read-write access to mail and restart Brenn";
+/// What the operator does when the account's token cannot write `data`
+/// ("mail", "contacts").
+pub fn read_only_token(data: &str) -> String {
+    format!(
+        "the token for this account cannot write {data}: the operator must replace its key \
+         file with a token that has read-write access to {data} and restart Brenn"
+    )
+}
 
 /// Where the operator looks when the token's session lacks a capability or
 /// a primary account the tool needs.
@@ -164,14 +169,17 @@ pub fn jmap_failure(error: JmapError) -> Failure {
 /// A JMAP reading error at a write method: the method refused because the
 /// token cannot write to the account (`accountReadOnly`, or `forbidden`,
 /// which refuses the whole method rather than one object) is the operator's,
-/// with [`READ_ONLY_TOKEN`]; everything else as [`jmap_failure`]. Those two
-/// and the caller's errors are [`StepFailure::Refused`]; every other error,
-/// a server failure or a malformed answer among them, leaves the write
-/// unknown.
-pub fn write_method_failure(error: JmapError) -> StepFailure {
+/// with [`read_only_token`] for `data`; everything else as [`jmap_failure`].
+/// Those two and the caller's errors are [`StepFailure::Refused`]; every
+/// other error, a server failure or a malformed answer among them, leaves
+/// the write unknown.
+pub fn write_method_failure(data: &str, error: JmapError) -> StepFailure {
     match &error {
         JmapError::Method { kind, .. } if kind == "accountReadOnly" || kind == "forbidden" => {
-            StepFailure::Refused(internal(format!("{API_NAME}: {error}; {READ_ONLY_TOKEN}")))
+            StepFailure::Refused(internal(format!(
+                "{API_NAME}: {error}; {}",
+                read_only_token(data)
+            )))
         }
         JmapError::Method { kind, .. } if CALLER_ERRORS.contains(&kind.as_str()) => {
             StepFailure::Refused(jmap_failure(error))
@@ -187,8 +195,9 @@ pub fn concerns_mailbox_membership(error: &SetError) -> bool {
     error.properties.iter().any(|p| p == "mailboxIds")
 }
 
-/// Why Fastmail refused one object of a `/set`: its `SetError` rendered, and
-/// for a message (`what` is "message") whose refusal
+/// Why Fastmail refused one object of a `/set` (a `what`, as [`set_failure`]
+/// takes it): its `SetError` rendered, and for a message (`what` is
+/// "message") whose refusal
 /// [`concerns_mailbox_membership`], [`MAILBOX_MEMBERSHIP_HINT`] appended.
 pub fn set_error_reason(what: &str, error: &SetError) -> String {
     let mut reason = error.to_string();
@@ -199,12 +208,13 @@ pub fn set_error_reason(what: &str, error: &SetError) -> String {
     reason
 }
 
-/// A `/set`'s refusal of object `id` (a `what`: "message" or "mailbox") as
-/// the request's failure: a refusal the caller's arguments caused is
-/// `invalid_args`, one the server caused `internal`. `forbidden` is the
-/// account's permissions refusing this change to the object, such as a
-/// mailbox the user may not rename (RFC 8620 section 5.3), not the token's
-/// access, which the method's own error reports.
+/// A `/set`'s refusal of object `id` (a `what`, the object's kind in the
+/// caller's terms: "message", "mailbox", "contact") as the request's failure:
+/// a refusal the caller's arguments caused is `invalid_args`, one the server
+/// caused `internal`. `forbidden` is the account's permissions refusing this
+/// change to the object, such as a mailbox the user may not rename (RFC 8620
+/// section 5.3), not the token's access, which the method's own error
+/// reports.
 pub fn set_failure(what: &str, id: &str, error: &SetError) -> Failure {
     let reason = set_error_reason(what, error);
     match error.kind.as_str() {
@@ -388,6 +398,20 @@ mod tests {
     }
 
     #[test]
+    fn the_read_only_token_text_names_the_data_the_token_cannot_write() {
+        assert_eq!(
+            read_only_token("mail"),
+            "the token for this account cannot write mail: the operator must replace its key \
+             file with a token that has read-write access to mail and restart Brenn"
+        );
+        assert_eq!(
+            read_only_token("contacts"),
+            "the token for this account cannot write contacts: the operator must replace its \
+             key file with a token that has read-write access to contacts and restart Brenn"
+        );
+    }
+
+    #[test]
     fn method_errors_map_to_the_callers_or_the_operators() {
         for kind in CALLER_ERRORS {
             assert_eq!(jmap_failure(method(kind)).kind, ErrorKind::InvalidArgs);
@@ -405,18 +429,23 @@ mod tests {
             )
         );
         for kind in ["accountReadOnly", "forbidden"] {
-            assert_eq!(
-                write_method_failure(method(kind)),
-                StepFailure::Refused(failure(
-                    ErrorKind::Internal,
-                    &format!("Fastmail: Email/set failed: {kind}: no; {READ_ONLY_TOKEN}")
-                ))
-            );
+            for data in ["mail", "contacts"] {
+                assert_eq!(
+                    write_method_failure(data, method(kind)),
+                    StepFailure::Refused(failure(
+                        ErrorKind::Internal,
+                        &format!(
+                            "Fastmail: Email/set failed: {kind}: no; {}",
+                            read_only_token(data)
+                        )
+                    ))
+                );
+            }
             assert_eq!(jmap_failure(method(kind)).kind, ErrorKind::Internal);
-            assert!(!jmap_failure(method(kind)).detail.contains(READ_ONLY_TOKEN));
+            assert!(!jmap_failure(method(kind)).detail.contains("cannot write"));
         }
         assert_eq!(
-            write_method_failure(method("requestTooLarge")),
+            write_method_failure("mail", method("requestTooLarge")),
             StepFailure::Refused(jmap_failure(method("requestTooLarge")))
         );
         for kind in [
@@ -426,12 +455,12 @@ mod tests {
             "somethingNew",
         ] {
             assert_eq!(
-                write_method_failure(method(kind)),
+                write_method_failure("mail", method(kind)),
                 StepFailure::Unknown(jmap_failure(method(kind)))
             );
         }
         assert_eq!(
-            write_method_failure(JmapError::Shape("x".to_owned())),
+            write_method_failure("mail", JmapError::Shape("x".to_owned())),
             StepFailure::Unknown(jmap_failure(JmapError::Shape("x".to_owned())))
         );
     }
