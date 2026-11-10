@@ -173,6 +173,9 @@ DEPLOYMENT_MODULE_ROOTS = [
 
 # TODO(quality-readme-config-excerpts-unguarded-and-doubled): nothing holds
 # the README's configuration excerpts equal to the example document.
+# TODO(restart-wording-after-provider-reload): the README's paragraph on
+# adding a component says it takes a restart; once a Brenn release applies
+# that reload, the paragraph says reload and names that release.
 config_fit_test(
     name = "example_fit",
     config = "config/example.brenn",

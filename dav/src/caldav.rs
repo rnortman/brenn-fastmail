@@ -2,6 +2,11 @@
 //! answers: the principal (RFC 5397), its calendar home, the calendars in
 //! it, and the calendar objects a `calendar-query` selects.
 
+// TODO(calendar-read-rfc-citations-unchecked): the RFC citations in this
+// crate's CalDAV, multi-status, href and iCalendar reader modules, the
+// calendar read component and its specification have not been compared with
+// the published RFC text.
+
 use roxmltree::Node;
 
 use crate::error::Error;
