@@ -8,7 +8,7 @@ RFC 8621, RFC 9610) and its calendars over CalDAV (RFC 4791) through Brenn's
 a key file the operator places, bound to that user, and never reaches a
 component: an agent reads the Fastmail account of the user it is serving.
 
-The repository holds five components. `fastmail-mail-read` gives an agent four
+The repository holds six components. `fastmail-mail-read` gives an agent four
 read-only tools: `FastmailMailboxes` (the account's mailboxes),
 `FastmailSearch` (messages by sender, recipient, subject, text, mailbox, date
 or keyword), `FastmailRead` (one message's headers and text, attachments
@@ -45,24 +45,40 @@ API token: `FastmailCalendars` (the account's calendars),
 each recurring event expanded by Fastmail into its occurrences) and
 `FastmailCalendarEvent` (one event in full: description, organizer,
 attendees, recurrence and changed occurrences). Nothing it does writes to the
-account. It is built on `fastmail-dav`, a transport-free crate holding the
-CalDAV request bodies, a multi-status reader (RFC 4918) and an iCalendar
-reader (RFC 5545).
+account. `fastmail-calendar-write` gives an agent three tools that change
+calendars, through an app password of its own: `FastmailCalendarEventCreate`
+(a new event on one calendar, all-day, at a UTC instant or at a local time in
+a named zone, optionally repeating by an `RRULE`),
+`FastmailCalendarEventUpdate` (an event's summary, description, location or
+time, every other line of the stored event written back as it was read) and
+`FastmailCalendarEventDelete` (an event, a recurring one whole only when the
+call says `series: true`). Each change is conditional: a create never
+replaces a stored event, and an update or a delete applies only if the event
+is still the one that was read. Nothing it does sends mail, so an event with
+an organizer or attendees is refused. Both calendar components are built on
+`fastmail-dav`, a transport-free crate holding the CalDAV request bodies, a
+multi-status reader (RFC 4918) and an iCalendar reader and writer
+(RFC 5545).
 
 ## Status
 
-Five components: `fastmail-mail-read`, with four read-only tools;
+Six components: `fastmail-mail-read`, with four read-only tools;
 `fastmail-mail-write`, which organizes messages and mailboxes and saves
 drafts; `fastmail-contacts`, with three read-only tools over contacts
 (`FastmailAddressBooks`, `FastmailContactSearch`, `FastmailContactRead`);
 `fastmail-contacts-write`, which creates and updates contacts
-(`FastmailContactCreate`, `FastmailContactUpdate`); and `fastmail-calendar`,
+(`FastmailContactCreate`, `FastmailContactUpdate`); `fastmail-calendar`,
 with three read-only tools over calendars (`FastmailCalendars`,
-`FastmailCalendarEvents`, `FastmailCalendarEvent`). The calendar component
-needs a brenn whose `api-request` carries `PROPFIND`, `REPORT` and paths
-ending in `/`, which no brenn release does yet, and it has not met a live
-Fastmail account: Fastmail setup step 7 is the check. A calendar is never
-written. A contact is never
+`FastmailCalendarEvents`, `FastmailCalendarEvent`); and
+`fastmail-calendar-write`, which creates, changes and deletes events
+(`FastmailCalendarEventCreate`, `FastmailCalendarEventUpdate`,
+`FastmailCalendarEventDelete`). The calendar components need a brenn whose
+`api-request` carries `PROPFIND`, `REPORT` and paths ending in `/`, which no
+brenn release does yet, and neither has met a live Fastmail account:
+Fastmail setup steps 7 and 8 are the checks. The calendar write tools do not
+change or delete an event with an organizer or attendees, a recurring
+event's time or rule, or one occurrence of a series: those are changed in
+Fastmail. A calendar itself is never written. A contact is never
 deleted, and an address book never written. Nothing here sends mail, there is no Sieve support, and attachments
 are listed, not fetched. A draft is created, never edited in place or
 destroyed. Releases are tagged `v<version>`; `CHANGELOG.md` lists them. The
@@ -75,8 +91,11 @@ operator's to run.
 1. Install bazelisk, with git and make the only host prerequisites
    ([Building](docs/developing.md#building)).
 2. For each user, create a Fastmail API token and, for the calendar, an app
-   password, and confirm they reach their account
-   ([Fastmail setup](#fastmail-setup), steps 1–3 and 7).
+   password, and a second app password for calendar writes, and confirm they
+   reach their account ([Fastmail setup](#fastmail-setup), steps 1–3, 7 and
+   8). One app password per account in both calendar providers also works,
+   if the deployer accepts the read instance holding a credential that can
+   write.
 3. Build the tree with `make bundle` and install it as a mount
    ([Adding the bundle to a deployment](#adding-the-bundle-to-a-deployment)).
 4. Add the configuration and run `brenn config-check` on it before
@@ -109,13 +128,16 @@ operator's to run.
    provider, `fastmail-calendar`, which only the calendar instance names.
    That the calendar component writes nothing rests on its code and on the
    instance's clauses, which admit no writing method, not on the app
-   password.
+   password. For the calendar write component, each user creates a second
+   app password per account, limited to calendars and allowed to write them;
+   it goes in a sixth key provider, `fastmail-calendar-write`, which only the
+   calendar write instance names.
 2. Write one file per account: `Bearer <token>` — the word, one space, the
    token, nothing else — in a file owned by the user brenn runs as, mode
    `0600`. Brenn sends the
    file's content verbatim as the `Authorization` header and refuses a key
-   holding anything but visible ASCII and spaces. A calendar file holds
-   `Basic ` and the base64 of `<address>:<app-password>` instead. Write it
+   holding anything but visible ASCII and spaces. A calendar file, read or
+   write, holds `Basic ` and the base64 of `<address>:<app-password>` instead. Write it
    with the password read from a prompt, so it is in no command line or
    shell history:
 
@@ -371,14 +393,99 @@ operator's to run.
    with an `RRULE` or an `RDATE` or with times in a zone, and whether
    Fastmail let the app password be limited to reading.
 
+8. For each calendar write file, send the requests `fastmail-calendar-write`
+   sends, on a calendar `<calendar>` from step 7 (c) and an event name you
+   pick, such as `brenn-check-1.ics`, which nothing at that path may hold.
+   Define a helper, with the file; it prints the answer's headers and body:
+
+   ```
+   cal() {
+     curl -s -i -X "$1" \
+       -H @<(printf 'Authorization: %s\n' "$(cat <file>)") \
+       "${@:3}" -w '\nHTTP %{http_code}\n' \
+       "https://caldav.fastmail.com$2"
+   }
+   event='BEGIN:VCALENDAR
+   VERSION:2.0
+   PRODID:-//brenn-fastmail//fastmail-calendar-write//EN
+   BEGIN:VEVENT
+   UID:brenn-check-1
+   DTSTAMP:20261102T090000Z
+   DTSTART;TZID=Europe/London:20261102T090000
+   DTEND;TZID=Europe/London:20261102T091500
+   SUMMARY:brenn check
+   END:VEVENT
+   END:VCALENDAR'
+   event=$(printf '%s' "$event" | sed 's/^ *//; s/$/\r/')$'\n'
+   ```
+
+   (a) Ask what the calendar supports:
+
+   ```
+   cal OPTIONS <calendar>
+   ```
+
+   Note whether the `DAV` header lists `calendar-no-timezone`.
+
+   (b) Create the event, with a zone and no `VTIMEZONE`, only if nothing is
+   at the path; then the same again:
+
+   ```
+   cal PUT <calendar>brenn-check-1.ics -H 'If-None-Match: *' \
+     -H 'Content-Type: text/calendar; charset=utf-8' --data-binary "$event"
+   ```
+
+   Expect `HTTP 201` or `HTTP 204` the first time and `HTTP 412` the second.
+
+   (c) Read it:
+
+   ```
+   cal GET <calendar>brenn-check-1.ics -H 'Accept: text/calendar'
+   ```
+
+   Expect `HTTP 200` and an `ETag` header in double quotes, not beginning
+   `W/`. Note it, quotes included, as `<tag>`.
+
+   (d) Read the event's day with step 7 (d)'s `REPORT`, its dates set to
+   2 and 3 November 2026. Expect the event at `20261102T090000Z`, the instant
+   9:00 in London gives that day.
+
+   (e) Change it only if it is still the one read, then the same again:
+
+   ```
+   cal PUT <calendar>brenn-check-1.ics -H "If-Match: <tag>" \
+     -H 'Content-Type: text/calendar; charset=utf-8' \
+     --data-binary "${event/brenn check/brenn check changed}"
+   ```
+
+   Expect `HTTP 204` the first time and `HTTP 412` the second, the tag
+   being stale. Read it as in (c) and note the new tag as `<tag>`.
+
+   (f) Delete it only if it is still the one read:
+
+   ```
+   cal DELETE <calendar>brenn-check-1.ics -H "If-Match: <tag>"
+   ```
+
+   Expect `HTTP 204`, and a `GET` as in (c) then answering `HTTP 404`.
+
+   Confirm that no mail was sent from the account or arrived for it. Record
+   in the tracker entry `calendar-write-unconfirmed-against-live-fastmail`
+   anything that differs: the status and headers of the step that differed;
+   whether (a) listed `calendar-no-timezone`; a `PUT` in (b) refused naming
+   `valid-calendar-data`, or a `REPORT` in (d) showing another instant, which
+   means Fastmail does not take a zone by name; an `ETag` missing or weak;
+   and whether Fastmail let the app password be limited to calendars.
+
 ## Adding the bundle to a deployment
 
 `make bundle` builds the release tree — `components/fastmail-mail-read/`,
 `components/fastmail-mail-write/`, `components/fastmail-contacts/`,
 `components/fastmail-contacts-write/`, `components/fastmail-calendar/`,
-`modules/fastmail-mail-read.brenn`, `modules/fastmail-mail-write.brenn`,
-`modules/fastmail-contacts.brenn`, `modules/fastmail-contacts-write.brenn` and
-`modules/fastmail-calendar.brenn` — and `make bundle-dir` prints its absolute
+`components/fastmail-calendar-write/`, `modules/fastmail-mail-read.brenn`,
+`modules/fastmail-mail-write.brenn`, `modules/fastmail-contacts.brenn`,
+`modules/fastmail-contacts-write.brenn`, `modules/fastmail-calendar.brenn` and
+`modules/fastmail-calendar-write.brenn` — and `make bundle-dir` prints its absolute
 path; a deploy pipeline copies that tree and writes a `VERSION` file beside
 it, which a mount requires. This repository ships no installer.
 
@@ -402,6 +509,7 @@ use @fastmail-mail-write::*;
 use @fastmail-contacts::*;
 use @fastmail-contacts-write::*;
 use @fastmail-calendar::*;
+use @fastmail-calendar-write::*;
 ```
 
 A read's answer is Fastmail's JSON as a string inside the tool result, and
@@ -537,6 +645,30 @@ api_key_provider fastmail-calendar {
 }
 ```
 
+The calendar write component's provider holds the app passwords that may
+write calendars, in the same form, for the same accounts under the same names
+and with the same `default`:
+
+```
+api_key_provider fastmail-calendar-write {
+  header = "Authorization";
+  api_hosts = ["https://caldav.fastmail.com"];
+  account alice {
+    user = "alice";
+    key_file = "/etc/brenn/fastmail-calendar-write/alice";
+    default = true;
+  }
+  account alice-work {
+    user = "alice";
+    key_file = "/etc/brenn/fastmail-calendar-write/alice-work";
+  }
+  account bob {
+    user = "bob";
+    key_file = "/etc/brenn/fastmail-calendar-write/bob";
+  }
+}
+```
+
 The inbox the read instance's answers arrive on. The class's four tools together
 allow 12 live requests, each with one nested call outstanding; a result can
 be re-delivered once, so `retain_depth` is at least 24, rounded up to 32:
@@ -598,12 +730,30 @@ channel at "brenn:tool-results/fastmail_calendar" {
 }
 ```
 
+The calendar write class's three tools allow 6 live requests, so 2 × 6 = 12
+fits the default of 16; declare its inbox anyway so a full one raises an
+alarm:
+
+```
+channel at "brenn:tool-results/fastmail_calendar_write" {
+  push_depth = 1;
+  retain_depth = 16;
+  standing_retain_depth = 16;
+  noise = alarm;
+}
+```
+
 The instances. Each JMAP instance may call exactly two endpoints, through its
 own key provider; `config` names the provider and the host it calls. The
 calendar instance's five clauses are its read-only guarantee: they admit no
 writing method, whatever the app password can do. They hold the paths
 Fastmail's help pages give; a discovered path of another shape is refused by
-brenn, naming the clause, and the fix is the clause:
+brenn, naming the clause, and the fix is the clause. The calendar write
+instance's three clauses admit `GET`, `PUT` and `DELETE` of an event, a path
+below a calendar, and nothing else. A deployment that should not delete
+events drops its `DELETE` clause and the agent's
+`fastmail-calendar-event-delete` grant; brenn then refuses a nested `DELETE`
+as denied, naming the clause:
 
 ```
 new fastmail_mail: FastmailMailRead {
@@ -678,13 +828,29 @@ new fastmail_calendar: FastmailCalendar {
     host = "caldav.fastmail.com"
   };
 }
+
+new fastmail_calendar_write: FastmailCalendarWrite {
+  grants = [log, store, config, tools, provides];
+  store_path = "/var/lib/brenn/stores/fastmail_calendar_write";
+  tool api-request {
+    allow { provider = "fastmail-calendar-write"; method = "GET";    host = "caldav.fastmail.com"; path = "/dav/calendars/user/*/*/*"; }
+    allow { provider = "fastmail-calendar-write"; method = "PUT";    host = "caldav.fastmail.com"; path = "/dav/calendars/user/*/*/*"; }
+    allow { provider = "fastmail-calendar-write"; method = "DELETE"; host = "caldav.fastmail.com"; path = "/dav/calendars/user/*/*/*"; }
+    rate_limit { burst = 20; sustained_per_minute = 60; }
+  }
+  config = {
+    provider = "fastmail-calendar-write",
+    host = "caldav.fastmail.com"
+  };
+}
 ```
 
 And on each agent that may use the account, which must run in a
 `container`, the read tools, the write tools where the agent may change the
 account, the contacts tools where it may read contacts, the contacts
-write tools where it may change them, and the calendar tools where it may
-read calendars:
+write tools where it may change them, the calendar tools where it may read
+calendars, and the calendar write tools where it may change them, the delete
+tool only where it may delete events:
 
 ```
   tool fastmail-mailboxes {}
@@ -703,6 +869,9 @@ read calendars:
   tool fastmail-calendars {}
   tool fastmail-calendar-events {}
   tool fastmail-calendar-event {}
+  tool fastmail-calendar-event-create {}
+  tool fastmail-calendar-event-update {}
+  tool fastmail-calendar-event-delete {}
 ```
 
 A draft is from one of the account's sending identities: the only one, or the account's
@@ -715,7 +884,8 @@ Run `brenn config-check` on the document before stopping the service, then
 restart: a key provider and the `messaging` section are read at boot, and a
 reload that changes either is refused; installing a component whose class
 provides tools, such as adding `fastmail-mail-write`, `fastmail-contacts`,
-`fastmail-contacts-write` or `fastmail-calendar` to a deployment that runs
+`fastmail-contacts-write`, `fastmail-calendar` or `fastmail-calendar-write`
+to a deployment that runs
 only the read component,
 also takes a restart, as does the new key provider each brings.
 
@@ -737,7 +907,8 @@ also takes a restart, as does the new key provider each brings.
   A calendar window that meets either limit, or that Fastmail answers with
   HTTP 507, is narrowed with `from` and `to`; a busy calendar's window needs
   the raised cap. A calendar event has no argument to narrow it: a refusal
-  names the setting to raise.
+  names the setting to raise. An event too large to read is not changed or
+  deleted either.
 - **Arguments.** A nested call's arguments are capped at 64 KiB; every
   request the components build fits under it by construction.
   `FastmailOrganize` takes 1–500 message ids and up to 20 entries in each of
@@ -749,7 +920,11 @@ also takes a restart, as does the new key provider each brings.
   `FastmailContactCreate` refuses a contact whose texts together are over
   30000 bytes as sent, asking for fewer or shorter entries;
   `FastmailContactUpdate` changes one entry per call, its longest text a
-  4000-character note.
+  4000-character note. `FastmailCalendarEventUpdate` writes the whole event
+  back in one call, so an event over 60,000 bytes as the call carries it
+  (escaped as JSON: each line end counts four bytes, each `"` and `\` two),
+  such as one with many changed occurrences or an inline attachment, is
+  refused before anything is written and is changed in Fastmail.
 - **Time.** A tool call has 240 seconds end to end. Each step — the session
   read, the JMAP call, and for a thread a second JMAP call — is one nested
   call of at most 60 seconds. A draft is three steps: the session, a lookup
@@ -761,10 +936,32 @@ also takes a restart, as does the new key provider each brings.
   `FastmailCalendars` is three steps: the principal, its calendar home, then
   the calendars in it. `FastmailCalendarEvents` and `FastmailCalendarEvent`
   are one each: a `REPORT` of the calendar, a `GET` of the event.
+  `FastmailCalendarEventCreate` is one `PUT`; an update and a delete are a
+  `GET` of the event, then a `PUT` or a `DELETE` that Fastmail refuses if the
+  event changed in between; the agent is told to read it again.
 - **Window times are UTC.** Fastmail expands a window's recurring events and
   converts every time in a zone to UTC, so `FastmailCalendarEvents` shows UTC
   instants, all-day dates and floating local times, never a named zone.
   `FastmailCalendarEvent` shows an event's own zone.
+- **Calendar writes send no mail.** No tool call sends mail, so an event
+  with an organizer or attendees, in its main event or any changed
+  occurrence, is refused by the update and delete tools and is changed in
+  Fastmail; a new event has neither. A recurring event's summary,
+  description and location change for the whole series, and an occurrence
+  already changed apart from it keeps its own; its time and rule, and any
+  one occurrence, are changed in Fastmail. A recurring event is deleted only
+  whole, with `series: true`. A deleted event cannot be brought back from
+  here.
+- **A zone is named, not looked up.** A new or moved event in a zone is
+  written with its `TZID` and no `VTIMEZONE`, a form Fastmail is assumed to
+  accept (Fastmail setup step 8). The tool tells the agent to confirm the
+  time with `FastmailCalendarEvents`; a misspelled zone Fastmail accepts
+  would show the event at another time.
+- **A lost answer to a calendar write.** A create whose answer is lost may
+  have made the event: the agent is told to look for it in its window before
+  asking again, or the user has two. An update or delete asked again after a
+  lost answer is safe: a changed event is read afresh, and a deleted one is
+  refused as no event.
 - **One calendar per call.** `FastmailCalendarEvents` reads one calendar; an
   agent wanting a day across a user's calendars lists them and asks each.
 - **A `path` clause is not a boundary between a collection's members.** The
@@ -811,14 +1008,15 @@ also takes a restart, as does the new key provider each brings.
 - [`spec/fastmail-mail-read.brenn`](spec/fastmail-mail-read.brenn),
   [`spec/fastmail-mail-write.brenn`](spec/fastmail-mail-write.brenn),
   [`spec/fastmail-contacts.brenn`](spec/fastmail-contacts.brenn),
-  [`spec/fastmail-contacts-write.brenn`](spec/fastmail-contacts-write.brenn) and
-  [`spec/fastmail-calendar.brenn`](spec/fastmail-calendar.brenn) — the
+  [`spec/fastmail-contacts-write.brenn`](spec/fastmail-contacts-write.brenn),
+  [`spec/fastmail-calendar.brenn`](spec/fastmail-calendar.brenn) and
+  [`spec/fastmail-calendar-write.brenn`](spec/fastmail-calendar-write.brenn) — the
   tools' input schemas and the instances' settings.
 - [`config/example.brenn`](config/example.brenn) — the checked example
   configuration the excerpts above come from.
 
 ## License
 
-Apache-2.0. See `LICENSE` and `NOTICE`. The calendar component links
+Apache-2.0. See `LICENSE` and `NOTICE`. The calendar components link
 [`roxmltree`](https://crates.io/crates/roxmltree) (MIT OR Apache-2.0) and
 [`memchr`](https://crates.io/crates/memchr) (Unlicense OR MIT).

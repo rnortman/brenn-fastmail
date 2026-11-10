@@ -7,6 +7,7 @@
 # `deployed_components_test` enforces this. A new package is added in both
 # places or the build fails.
 fastmail-calendar
+fastmail-calendar-write
 fastmail-contacts
 fastmail-contacts-write
 fastmail-mail-read

@@ -4,6 +4,7 @@
 use std::collections::BTreeSet;
 
 use brenn_provider_kit::{Args, capped};
+use fastmail_dav::href;
 use serde_json::Value;
 
 /// The argument every tool takes beside its own.
@@ -98,20 +99,43 @@ pub fn utc_date_arg(args: &Args, key: &str) -> Result<Option<String>, String> {
     }
 }
 
+/// Whether `text` has `shape`'s length and matches it byte for byte, each
+/// `0` in `shape` standing for any ASCII digit.
+pub fn fits_shape(text: &str, shape: &[u8]) -> bool {
+    text.len() == shape.len()
+        && text.bytes().zip(shape).all(|(b, &s)| match s {
+            b'0' => b.is_ascii_digit(),
+            _ => b == s,
+        })
+}
+
+/// The calendar path argument at `key`: a calendar's when `collection`,
+/// ending in `/`, else an event's, not ending in `/`; held to the rule
+/// `api-request` applies to a request path.
+pub fn calendar_path_arg(args: &Args, key: &str, collection: bool) -> Result<String, String> {
+    let rule = if collection {
+        "a `calendar` path from `FastmailCalendars`, beginning and ending in `/`"
+    } else {
+        "an `event` path from `FastmailCalendarEvents`, beginning with `/` and not ending in `/`"
+    };
+    let Some(value) = args.get(key) else {
+        return Err(format!("`{key}` is required"));
+    };
+    match value {
+        Value::String(path) if path.starts_with('/') && href::is_collection(path) == collection => {
+            href::path(path, "").map_err(|error| format!("`{key}` must be {rule}: {error}"))
+        }
+        _ => Err(format!("`{key}` must be {rule}")),
+    }
+}
+
 /// `text`, a date (`2026-11-08`) or a UTC instant to the second
 /// (`2026-11-08T10:00:00Z`) in exactly that shape, as a UTC instant: a date
 /// is its midnight. Field ranges are the server's to check.
 pub fn utc_date(text: &str) -> Option<String> {
-    let fits = |shape: &[u8]| {
-        text.len() == shape.len()
-            && text.bytes().zip(shape).all(|(b, &s)| match s {
-                b'0' => b.is_ascii_digit(),
-                _ => b == s,
-            })
-    };
-    if fits(b"0000-00-00T00:00:00Z") {
+    if fits_shape(text, b"0000-00-00T00:00:00Z") {
         Some(text.to_owned())
-    } else if fits(b"0000-00-00") {
+    } else if fits_shape(text, b"0000-00-00") {
         Some(format!("{text}T00:00:00Z"))
     } else {
         None
@@ -219,6 +243,17 @@ pub fn wire_width(text: &str) -> usize {
     let once = serde_json::to_string(text).expect("a string serialises");
     let twice = serde_json::to_string(&once[1..once.len() - 1]).expect("a string serialises");
     twice.len() - 2
+}
+
+/// The bytes `text` takes once escaped as a JSON string — a text body inside
+/// the nested call's arguments — without the quotes around it: a line break
+/// is two bytes, a quote or backslash two, another C0 control six;
+/// non-ASCII stays UTF-8.
+pub fn json_width(text: &str) -> usize {
+    serde_json::to_string(text)
+        .expect("a string serialises")
+        .len()
+        - 2
 }
 
 /// Whether `text` holds no character JSON escaping widens — no control
@@ -384,6 +419,20 @@ mod tests {
         assert_eq!(wire_width(&format!("x{}", "\n".repeat(9_999))), 29_998);
         assert_eq!(wire_width(&format!("xxx{}", "\n".repeat(9_999))), 30_000);
         assert_eq!(wire_width(&"\"".repeat(7_500)), 30_000);
+    }
+
+    #[test]
+    fn json_width_counts_one_escaping() {
+        assert_eq!(json_width(""), 0);
+        assert_eq!(json_width("hello"), 5);
+        assert_eq!(json_width("\""), 2);
+        assert_eq!(json_width("\\"), 2);
+        assert_eq!(json_width("\r\n"), 4);
+        assert_eq!(json_width("\t"), 2);
+        assert_eq!(json_width("\u{1}"), 6);
+        assert_eq!(json_width("é"), 2);
+        assert_eq!(json_width("😀"), 4);
+        assert_eq!(json_width("SUMMARY:a\r\n"), 13);
     }
 
     #[test]

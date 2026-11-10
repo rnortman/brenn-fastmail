@@ -9,8 +9,9 @@
 //!   the width a string has on the wire.
 //! - [`contacts`]: the names the contacts tools give a card's lists.
 //! - [`steps`]: the session step and the JMAP API call.
-//! - [`dav`]: the DAV call and its answer as a payload or the request's
-//!   failure.
+//! - [`dav`]: the DAV call, its precondition and its answer as a payload or
+//!   the request's failure.
+//! - [`event`]: a calendar resource's events, selected and shown.
 //! - [`failure`]: Fastmail's answer as the request's body or failure.
 //! - [`results`]: a `/query` and `/get` pair read into a page, and the one
 //!   object a get by id names, and a string cut to its serialized width.
@@ -20,6 +21,7 @@
 pub mod args;
 pub mod contacts;
 pub mod dav;
+pub mod event;
 pub mod failure;
 pub mod results;
 pub mod settings;

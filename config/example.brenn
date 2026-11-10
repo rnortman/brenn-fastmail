@@ -1,10 +1,11 @@
-// The document a deployer copies from: five Fastmail key providers, one
+// The document a deployer copies from: six Fastmail key providers, one
 // holding read-only mail tokens, one holding read-write mail tokens, one
-// holding read-only contacts tokens, one holding read-write contacts tokens
-// and one holding calendar app passwords; the `fastmail-mail-read`,
-// `fastmail-mail-write`, `fastmail-contacts`, `fastmail-contacts-write` and
-// `fastmail-calendar` instances, each with the clauses it calls through on its
-// own provider; and an agent granted the sixteen tools.
+// holding read-only contacts tokens, one holding read-write contacts tokens,
+// one holding calendar app passwords and one holding calendar app passwords
+// that may write; the `fastmail-mail-read`, `fastmail-mail-write`,
+// `fastmail-contacts`, `fastmail-contacts-write`, `fastmail-calendar` and
+// `fastmail-calendar-write` instances, each with the clauses it calls through
+// on its own provider; and an agent granted the nineteen tools.
 //
 // `example_fit` compiles it against the two module roots a host resolves it
 // from, this bundle's and brenn's; `config_check` lowers it with the verb an
@@ -15,6 +16,7 @@ use @fastmail-mail-write::*;
 use @fastmail-contacts::*;
 use @fastmail-contacts-write::*;
 use @fastmail-calendar::*;
+use @fastmail-calendar-write::*;
 
 server {
   bind_address = "127.0.0.1:3000";
@@ -308,6 +310,56 @@ new fastmail_calendar: FastmailCalendar {
   };
 }
 
+/// The calendar write component's app passwords: `Basic <base64 of
+/// address:app-password>`, a password that may write calendars. The same
+/// accounts under the same names and with the same `default`.
+api_key_provider fastmail-calendar-write {
+  header = "Authorization";
+  api_hosts = ["https://caldav.fastmail.com"];
+  account alice {
+    user = "alice";
+    key_file = "/etc/brenn/fastmail-calendar-write/alice";
+    default = true;
+  }
+  account alice-work {
+    user = "alice";
+    key_file = "/etc/brenn/fastmail-calendar-write/alice-work";
+  }
+  account bob {
+    user = "bob";
+    key_file = "/etc/brenn/fastmail-calendar-write/bob";
+  }
+}
+
+// The calendar write class's summed `max_concurrency` is 6, so 2 × 6 = 12
+// fits the family default of 16; the block is declared so `noise = alarm` holds.
+channel at "brenn:tool-results/fastmail_calendar_write" {
+  push_depth = 1;
+  retain_depth = 16;
+  standing_retain_depth = 16;
+  noise = alarm;
+}
+
+/// A create is one `PUT` of a new event; an update reads the event and
+/// writes it back, and a delete reads it and removes it, each only if the
+/// event is still the one that was read. Dropping the `DELETE` clause and
+/// the agent's `fastmail-calendar-event-delete` grant leaves a deployment
+/// creating and changing without deleting.
+new fastmail_calendar_write: FastmailCalendarWrite {
+  grants = [log, store, config, tools, provides];
+  store_path = "/var/lib/brenn/stores/fastmail_calendar_write";
+  tool api-request {
+    allow { provider = "fastmail-calendar-write"; method = "GET";    host = "caldav.fastmail.com"; path = "/dav/calendars/user/*/*/*"; }
+    allow { provider = "fastmail-calendar-write"; method = "PUT";    host = "caldav.fastmail.com"; path = "/dav/calendars/user/*/*/*"; }
+    allow { provider = "fastmail-calendar-write"; method = "DELETE"; host = "caldav.fastmail.com"; path = "/dav/calendars/user/*/*/*"; }
+    rate_limit { burst = 20; sustained_per_minute = 60; }
+  }
+  config = {
+    provider = "fastmail-calendar-write",
+    host = "caldav.fastmail.com"
+  };
+}
+
 agent Assistant() {
   working_dir = ".";
   container = "sandbox";
@@ -328,6 +380,9 @@ agent Assistant() {
   tool fastmail-calendars {}
   tool fastmail-calendar-events {}
   tool fastmail-calendar-event {}
+  tool fastmail-calendar-event-create {}
+  tool fastmail-calendar-event-update {}
+  tool fastmail-calendar-event-delete {}
 }
 
 new assistant: Assistant();

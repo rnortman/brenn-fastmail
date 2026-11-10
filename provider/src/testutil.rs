@@ -1,14 +1,17 @@
 //! Fixtures for a Fastmail component's host tests: its settings, a session,
-//! a JMAP answer, a DAV multi-status or iCalendar answer, a request's
+//! a JMAP answer, a DAV multi-status or iCalendar answer, a parsed
+//! calendar of events, a request's
 //! in-flight row and a pending call, the patterns
 //! its shared arguments are stated by and the probes that hold the parsers
 //! to them.
 
 use brenn_provider_kit::testutil::{http, payload};
 use brenn_provider_kit::{Call, InFlight, NestedError, Next, Probes, Request, Tool};
+use fastmail_dav::ical::{self, Component};
 use fastmail_jmap::session::{API_PATH, CORE, MAIL, SESSION_PATH, SUBMISSION};
 use serde_json::{Map, Value, json};
 
+use crate::dav::CALENDAR_CONTENT_TYPE;
 use crate::settings::Settings;
 use crate::steps::{SESSION_STEP, api_call};
 
@@ -108,11 +111,33 @@ pub fn multistatus(xml: &str) -> Result<Value, NestedError> {
 
 /// A `200` iCalendar answer carrying `text`.
 pub fn ics(text: &str) -> Result<Value, NestedError> {
-    payload(
-        200,
-        &[("content-type", "text/calendar; charset=utf-8")],
-        text.as_bytes(),
-    )
+    ics_tagged(text, None)
+}
+
+/// A `200` iCalendar answer carrying `text`, with `etag` as its `ETag`
+/// when given.
+pub fn ics_tagged(text: &str, etag: Option<&str>) -> Result<Value, NestedError> {
+    let mut headers = vec![("content-type", CALENDAR_CONTENT_TYPE)];
+    headers.extend(etag.map(|etag| ("etag", etag)));
+    payload(200, &headers, text.as_bytes())
+}
+
+/// A `VCALENDAR` holding one `VEVENT` per item of `events`, each item that
+/// event's content lines, parsed.
+pub fn calendar_of(events: &[&str]) -> Component {
+    let mut text = String::from("BEGIN:VCALENDAR\r\nVERSION:2.0\r\n");
+    for lines in events {
+        text.push_str(&format!("BEGIN:VEVENT\r\n{lines}END:VEVENT\r\n"));
+    }
+    text.push_str("END:VCALENDAR\r\n");
+    ical::parse(text.as_bytes()).expect("the fixture parses")
+}
+
+/// A bodyless answer to a write with `status`, with `etag` as its `ETag`
+/// when given.
+pub fn written(status: u64, etag: Option<&str>) -> Result<Value, NestedError> {
+    let headers: Vec<(&str, &str)> = etag.map(|etag| ("etag", etag)).into_iter().collect();
+    payload(status, &headers, b"")
 }
 
 /// The completed request's result; panics on anything else.

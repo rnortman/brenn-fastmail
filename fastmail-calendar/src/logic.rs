@@ -25,14 +25,17 @@ use brenn_provider_kit::{
 };
 use fastmail_dav::caldav::{self, CALENDARS_PROPFIND, HOME_PROPFIND, PRINCIPAL_PROPFIND};
 use fastmail_dav::{Error as DavError, href, ical};
-use fastmail_provider::args::{ACCOUNT_ARG, account_arg, utc_date_arg};
-use fastmail_provider::dav::{QUOTED_PATH_MAX, asked, dav_call, payload};
+use fastmail_provider::args::{ACCOUNT_ARG, account_arg, calendar_path_arg, utc_date_arg};
+use fastmail_provider::dav::{
+    CALENDAR_ACCEPT, DavRequest, Depth, Expect, QUOTED_PATH_MAX, asked, dav_call, payload,
+};
+use fastmail_provider::event::{BRIEF_TEXT_MAX, events, malformed, occurrence, start};
 use fastmail_provider::failure::stored_args;
 use fastmail_provider::results::{cut_value, cut_width};
 use fastmail_provider::settings::{API_NAME, Settings};
 use serde_json::{Value, json};
 
-use crate::event::{BRIEF_TEXT_MAX, events, full, malformed, occurrence, start};
+use crate::event::full;
 use crate::spec::Provided;
 
 /// Where discovery starts: the collection that answers which principal the
@@ -128,27 +131,6 @@ struct EventsArgs {
 const EVENTS_KEYS: &[&str] = &["calendar", "from", "to", "limit", ACCOUNT_ARG];
 const EVENT_KEYS: &[&str] = &["event", ACCOUNT_ARG];
 
-/// The path argument at `key`: a calendar's when `collection`, ending in
-/// `/`, else an event's, not ending in `/`; held to the rule `api-request`
-/// applies to a request path.
-fn path_arg(map: &Args, key: &str, collection: bool) -> Result<String, String> {
-    let rule = if collection {
-        "a `calendar` path from `FastmailCalendars`, beginning and ending in `/`"
-    } else {
-        "an `event` path from `FastmailCalendarEvents`, beginning with `/` and not ending in `/`"
-    };
-    let Some(value) = map.get(key) else {
-        return Err(format!("`{key}` is required"));
-    };
-    match value {
-        Value::String(path) if path.starts_with('/') && href::is_collection(path) == collection => {
-            // A path that begins with `/` is read without the host.
-            href::path(path, "").map_err(|error| format!("`{key}` must be {rule}: {error}"))
-        }
-        _ => Err(format!("`{key}` must be {rule}")),
-    }
-}
-
 // TODO(calendar-window-one-calendar-per-call): a window reads one calendar;
 // several in one call need rules for a partial read, `limit` and order.
 /// The window tool's arguments: one calendar, `from` before `to`.
@@ -158,7 +140,7 @@ fn parse_events(map: &Args) -> Result<EventsArgs, String> {
         let written = map[key].as_str().expect("a date argument is a string");
         Ok((written.to_owned(), start))
     };
-    let calendar = path_arg(map, "calendar", true)?;
+    let calendar = calendar_path_arg(map, "calendar", true)?;
     let (from, start) = bound("from")?;
     let (to, end) = bound("to")?;
     if end <= start {
@@ -185,7 +167,7 @@ fn parse(tool: Provided, args: &Value) -> Result<Parsed, String> {
         Provided::FastmailCalendars => ToolArgs::Calendars,
         Provided::FastmailCalendarEvents => ToolArgs::Events(parse_events(map)?),
         Provided::FastmailCalendarEvent => ToolArgs::Event {
-            event: path_arg(map, "event", false)?,
+            event: calendar_path_arg(map, "event", false)?,
         },
     };
     Ok(Parsed {
@@ -203,56 +185,34 @@ fn compact(instant: &str) -> String {
         .collect()
 }
 
-/// A `PROPFIND` of `path` at `depth` asking `body`, as step `step`.
-fn propfind(
-    settings: &Settings,
-    account: Option<&str>,
-    step: u8,
-    path: &str,
-    depth: &str,
-    body: &str,
-) -> Call {
-    Call {
-        step,
-        api: dav_call(
-            settings,
-            account,
-            "PROPFIND",
-            path,
-            Some(depth),
-            Some(body.to_owned()),
-            None,
-        ),
-    }
-}
-
 /// Validate a request's arguments and issue its first call. An error is the
 /// request's `invalid_args` detail, naming the argument.
 pub fn plan(tool: Provided, args: &Value, settings: &Settings) -> Result<Call, String> {
     let parsed = parse(tool, args)?;
     let account = parsed.account.as_deref();
     Ok(match &parsed.tool {
-        ToolArgs::Calendars => propfind(
-            settings,
-            account,
-            PRINCIPAL_STEP,
-            PRINCIPALS_PATH,
-            "0",
-            PRINCIPAL_PROPFIND,
-        ),
+        ToolArgs::Calendars => Call {
+            step: PRINCIPAL_STEP,
+            api: dav_call(
+                settings,
+                account,
+                PRINCIPALS_PATH,
+                DavRequest::Propfind {
+                    depth: Depth::Zero,
+                    body: PRINCIPAL_PROPFIND,
+                },
+            ),
+        },
         ToolArgs::Events(args) => Call {
             step: ONLY_STEP,
             api: dav_call(
                 settings,
                 account,
-                "REPORT",
                 &args.calendar,
-                Some("1"),
-                Some(caldav::events_report(
-                    &compact(&args.start),
-                    &compact(&args.end),
-                )),
-                None,
+                DavRequest::Report {
+                    depth: Depth::One,
+                    body: caldav::events_report(&compact(&args.start), &compact(&args.end)),
+                },
             ),
         },
         ToolArgs::Event { event } => Call {
@@ -260,11 +220,10 @@ pub fn plan(tool: Provided, args: &Value, settings: &Settings) -> Result<Call, S
             api: dav_call(
                 settings,
                 account,
-                "GET",
                 event,
-                None,
-                None,
-                Some("text/calendar"),
+                DavRequest::Get {
+                    accept: CALENDAR_ACCEPT,
+                },
             ),
         },
     })
@@ -354,32 +313,51 @@ fn step(
     let host = settings.host.as_str();
     match &parsed.tool {
         ToolArgs::Calendars => {
-            let answer = payload(state, outcome, MULTI_STATUS, None, None)?;
+            let expect = Expect {
+                statuses: &[MULTI_STATUS],
+                ..Expect::default()
+            };
+            let answer = payload(state, outcome, &expect)?;
             let body = text(state, &answer)?;
             let read = |error| unreadable(state, error);
             Ok(match state.step {
                 PRINCIPAL_STEP => {
                     let href = caldav::principal(body).map_err(read)?;
                     let path = discovered(&href, "current-user-principal", host)?;
-                    let call = propfind(settings, account, HOME_STEP, &path, "0", HOME_PROPFIND);
+                    let api = dav_call(
+                        settings,
+                        account,
+                        &path,
+                        DavRequest::Propfind {
+                            depth: Depth::Zero,
+                            body: HOME_PROPFIND,
+                        },
+                    );
                     Next::Call {
-                        call,
+                        call: Call {
+                            step: HOME_STEP,
+                            api,
+                        },
                         derived: Args::new(),
                     }
                 }
                 HOME_STEP => {
                     let href = caldav::calendar_home(body).map_err(read)?;
                     let path = discovered(&href, "calendar-home-set", host)?;
-                    let call = propfind(
+                    let api = dav_call(
                         settings,
                         account,
-                        CALENDARS_STEP,
                         &path,
-                        "1",
-                        CALENDARS_PROPFIND,
+                        DavRequest::Propfind {
+                            depth: Depth::One,
+                            body: CALENDARS_PROPFIND,
+                        },
                     );
                     Next::Call {
-                        call,
+                        call: Call {
+                            step: CALENDARS_STEP,
+                            api,
+                        },
                         derived: Args::new(),
                     }
                 }
@@ -388,20 +366,25 @@ fn step(
         }
         ToolArgs::Events(args) => {
             let missing = format!("calendar at `{}`", args.calendar);
-            let answer = payload(
-                state,
-                outcome,
-                MULTI_STATUS,
-                Some(&missing),
-                Some(WINDOW_HINT),
-            )?;
+            let expect = Expect {
+                statuses: &[MULTI_STATUS],
+                missing: Some(&missing),
+                hint: Some(WINDOW_HINT),
+                ..Expect::default()
+            };
+            let answer = payload(state, outcome, &expect)?;
             let body = text(state, &answer)?;
             let resources = caldav::event_resources(body).map_err(|e| unreadable(state, e))?;
             window(args, resources, host)
         }
         ToolArgs::Event { event } => {
             let missing = format!("event at `{event}`");
-            let answer = payload(state, outcome, OK, Some(&missing), None)?;
+            let expect = Expect {
+                statuses: &[OK],
+                missing: Some(&missing),
+                ..Expect::default()
+            };
+            let answer = payload(state, outcome, &expect)?;
             let calendar = ical::parse(&answer.body).map_err(|error| malformed(event, error))?;
             full(event, &calendar).map(Next::Complete)
         }
@@ -495,6 +478,7 @@ mod tests {
         check, hold_probes, hold_required, input_schema, probes,
     };
     use fastmail_provider::dav::XML_CONTENT_TYPE;
+    use fastmail_provider::event::CODE_MAX;
     use fastmail_provider::testutil::{
         ACCOUNT_PATTERN, DATE_PATTERN, account_probes, completed, date_probes, ics, incoming,
         multistatus, settings,
@@ -1243,12 +1227,12 @@ mod tests {
     fn every_list_is_capped_and_the_worst_answers_fit_under_the_ceiling() {
         for c in ['x', '€'] {
             let long = |n: usize| fill(c, n + 1);
-            let zone = long(event::CODE_MAX);
+            let zone = long(CODE_MAX);
             let at = |name: &str| format!("{name};TZID={zone}:20261102T090000");
-            let status = format!("STATUS:{}", long(event::CODE_MAX));
+            let status = format!("STATUS:{}", long(CODE_MAX));
             let brief = [
-                format!("SUMMARY:{}", long(event::BRIEF_TEXT_MAX)),
-                format!("LOCATION:{}", long(event::BRIEF_TEXT_MAX)),
+                format!("SUMMARY:{}", long(BRIEF_TEXT_MAX)),
+                format!("LOCATION:{}", long(BRIEF_TEXT_MAX)),
                 at("DTSTART"),
                 at("DTEND"),
                 at("RECURRENCE-ID"),
@@ -1270,8 +1254,8 @@ mod tests {
                 format!(
                     "{kind};CN={};PARTSTAT={};ROLE={}:mailto:{}",
                     long(event::NAME_MAX),
-                    long(event::CODE_MAX),
-                    long(event::CODE_MAX),
+                    long(CODE_MAX),
+                    long(CODE_MAX),
                     long(event::EMAIL_MAX)
                 )
             };

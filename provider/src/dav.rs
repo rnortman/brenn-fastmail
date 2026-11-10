@@ -1,7 +1,7 @@
 //! The nested calls a DAV component issues and its answers read: a WebDAV
-//! (RFC 4918) or CalDAV (RFC 4791) call with its `Depth`, body and `Accept`
-//! headers, and an answer taken as its 2xx payload or mapped to the
-//! request's failure.
+//! (RFC 4918) or CalDAV (RFC 4791) call with the headers its method needs,
+//! and an answer taken as its 2xx payload or mapped to the request's failure,
+//! told apart by whether Fastmail is known to have done nothing.
 
 use brenn_provider_kit::{
     ApiCall, Failure, InFlight, NestedError, Payload, PayloadAnswer, Tool, internal,
@@ -9,16 +9,25 @@ use brenn_provider_kit::{
 };
 use serde_json::Value;
 
-use crate::failure::{RELAY_REFUSAL, invalid, rate_limited};
+use crate::failure::{RELAY_REFUSAL, StepFailure, invalid, rate_limited};
 use crate::results::cut_width;
 use crate::settings::{API_NAME, Settings};
 use crate::steps::api_call;
 
-/// The content type of every DAV request body this crate sends.
+/// The content type of every `PROPFIND` and `REPORT` body this crate sends.
 pub const XML_CONTENT_TYPE: &str = "application/xml; charset=utf-8";
+
+/// The content type of an iCalendar body.
+pub const CALENDAR_CONTENT_TYPE: &str = "text/calendar; charset=utf-8";
+
+/// The media type an event is read in.
+pub const CALENDAR_ACCEPT: &str = "text/calendar";
 
 /// The widest a path is quoted in a failure.
 pub const QUOTED_PATH_MAX: usize = 200;
+
+/// The widest entity tag [`etag`] takes.
+pub const ETAG_MAX: usize = 256;
 
 /// The method and path `state`'s call asked, for a failure.
 pub fn asked<T: Tool>(state: &InFlight<T>) -> String {
@@ -29,89 +38,220 @@ pub fn asked<T: Tool>(state: &InFlight<T>) -> String {
     )
 }
 
-/// One nested DAV call naming the request's `account`: [`api_call`] with
-/// `Depth` when `depth` is given, `Content-Type` [`XML_CONTENT_TYPE`] when
-/// there is a body, and `Accept` when `accept` is given. A `PROPFIND`
-/// without `Depth` means `infinity` (RFC 4918 section 9.1), so every
-/// `PROPFIND` and `REPORT` passes one.
-// TODO(quality-dav-call-stringly-depth-and-option-sprawl): state the
-// method-dependent `Depth`, body and `Accept` rules as types once a second
-// DAV caller shows which methods it needs.
+/// How far below its path a `PROPFIND` or `REPORT` reaches. A `PROPFIND`
+/// without `Depth` means `infinity` (RFC 4918 section 9.1), so every one
+/// states it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Depth {
+    /// The resource at the path alone.
+    Zero,
+    /// The resource and its members.
+    One,
+}
+
+impl Depth {
+    fn header(self) -> &'static str {
+        match self {
+            Depth::Zero => "0",
+            Depth::One => "1",
+        }
+    }
+}
+
+/// What must hold on the server for a `PUT` to be applied (RFC 7232
+/// section 3).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Precondition<'a> {
+    /// `If-None-Match: *`: nothing is stored at the path.
+    Absent,
+    /// `If-Match: <etag>`: the resource is the one that was read.
+    Unchanged(&'a str),
+}
+
+/// One DAV request: its method and what that method carries.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DavRequest<'a> {
+    /// A `PROPFIND` asking `body`.
+    Propfind { depth: Depth, body: &'a str },
+    /// A `REPORT` asking `body`.
+    Report { depth: Depth, body: String },
+    /// A `GET` answered in `accept`.
+    Get { accept: &'a str },
+    /// A `PUT` of `body`, applied only when `when` holds.
+    Put {
+        content_type: &'a str,
+        body: String,
+        when: Precondition<'a>,
+    },
+    /// A `DELETE`, applied only when the resource's entity tag is still
+    /// `unchanged`.
+    Delete { unchanged: &'a str },
+}
+
+/// One nested DAV call to `path` naming the request's `account`: the method
+/// `request` names, with `Depth` and `Content-Type` [`XML_CONTENT_TYPE`] for
+/// `PROPFIND` and `REPORT`, `Accept` for `GET`, the given `Content-Type` and
+/// `If-None-Match: *` or `If-Match` for `PUT`, and `If-Match` for `DELETE`.
 pub fn dav_call(
     settings: &Settings,
     account: Option<&str>,
-    method: &str,
     path: &str,
-    depth: Option<&str>,
-    body: Option<String>,
-    accept: Option<&str>,
+    request: DavRequest<'_>,
 ) -> ApiCall {
-    let has_body = body.is_some();
+    let (method, body, headers): (&str, Option<String>, Vec<(&str, &str)>) = match &request {
+        DavRequest::Propfind { depth, body } => (
+            "PROPFIND",
+            Some((*body).to_owned()),
+            vec![
+                ("Depth", depth.header()),
+                ("Content-Type", XML_CONTENT_TYPE),
+            ],
+        ),
+        DavRequest::Report { depth, body } => (
+            "REPORT",
+            Some(body.clone()),
+            vec![
+                ("Depth", depth.header()),
+                ("Content-Type", XML_CONTENT_TYPE),
+            ],
+        ),
+        DavRequest::Get { accept } => ("GET", None, vec![("Accept", accept)]),
+        DavRequest::Put {
+            content_type,
+            body,
+            when,
+        } => (
+            "PUT",
+            Some(body.clone()),
+            vec![
+                ("Content-Type", content_type),
+                match when {
+                    Precondition::Absent => ("If-None-Match", "*"),
+                    Precondition::Unchanged(etag) => ("If-Match", etag),
+                },
+            ],
+        ),
+        DavRequest::Delete { unchanged } => ("DELETE", None, vec![("If-Match", unchanged)]),
+    };
     let mut call = api_call(settings, account, method, path, body);
-    if let Some(depth) = depth {
-        call.headers.insert("Depth".to_owned(), depth.to_owned());
-    }
-    if has_body {
-        call.headers
-            .insert("Content-Type".to_owned(), XML_CONTENT_TYPE.to_owned());
-    }
-    if let Some(accept) = accept {
-        call.headers.insert("Accept".to_owned(), accept.to_owned());
+    for (name, value) in headers {
+        call.headers.insert(name.to_owned(), value.to_owned());
     }
     call
 }
 
-/// The step's answer as its payload when Fastmail answered HTTP `expect`;
-/// every other answer is the request's failure. A 404 is the caller's,
-/// "no `missing`", when the step asked for a handle the caller passed
-/// (`missing` is given); otherwise it is internal, as every other status is.
-/// `hint`, what the caller narrows, follows an unreadable answer and a 507.
-/// An error body is read only for the precondition a `{DAV:}error` names,
-/// and never copied otherwise.
-pub fn payload<T: Tool>(
+/// The answer's `ETag` when it is a strong entity tag: quoted, not `W/`, at
+/// most [`ETAG_MAX`] bytes, with no control character. `If-Match` compares
+/// strongly (RFC 7232 section 3.1), so a weak tag could never match.
+pub fn etag(payload: &Payload) -> Option<&str> {
+    payload.header("ETag").filter(|tag| {
+        tag.len() >= 2
+            && tag.len() <= ETAG_MAX
+            && tag.starts_with('"')
+            && tag.ends_with('"')
+            && !tag.chars().any(char::is_control)
+    })
+}
+
+/// What a step expects of its answer.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Expect<'a> {
+    /// The 2xx statuses that are this call's success.
+    pub statuses: &'a [u64],
+    /// What a 404 means, when the call asked for a handle the caller passed:
+    /// the failure is "no {missing}".
+    pub missing: Option<&'a str>,
+    /// What a 412 means, when the call carried a precondition: the sentence,
+    /// to which " (HTTP 412)" is appended.
+    pub stale: Option<&'a str>,
+    /// What the caller narrows after an unreadable answer or a 507.
+    pub hint: Option<&'a str>,
+}
+
+/// The step's answer as its payload when Fastmail answered one of
+/// `expect.statuses`; every other answer is the request's failure, told
+/// [`StepFailure::Refused`] when Fastmail is known to have done nothing (a
+/// 4xx, a relay) from [`StepFailure::Unknown`] (another 2xx, a 5xx, an answer
+/// lost or unreadable). A 404 is the caller's only with `expect.missing`, a
+/// 412 has its own text only with `expect.stale`; otherwise each is
+/// internal, as every other status is. An error body is read only for the
+/// precondition a `{DAV:}error` names, and never copied otherwise.
+pub fn step_payload<T: Tool>(
     state: &InFlight<T>,
     outcome: Result<Value, NestedError>,
-    expect: u64,
-    missing: Option<&str>,
-    hint: Option<&str>,
-) -> Result<Payload, Failure> {
+    expect: &Expect<'_>,
+) -> Result<Payload, StepFailure> {
     match read_api_payload(outcome, &state.target, API_NAME)? {
-        PayloadAnswer::Payload(payload) if payload.status == expect => Ok(payload),
-        PayloadAnswer::Payload(payload) => Err(internal(format!(
-            "{API_NAME} answered HTTP {} to {}, where {expect} was expected",
+        PayloadAnswer::Payload(payload) if expect.statuses.contains(&payload.status) => Ok(payload),
+        PayloadAnswer::Payload(payload) => Err(StepFailure::Unknown(internal(format!(
+            "{API_NAME} answered HTTP {} to {}, where {} was expected",
             payload.status,
-            asked(state)
-        ))),
-        PayloadAnswer::Relay(_) => Err(internal(RELAY_REFUSAL)),
-        PayloadAnswer::Unreadable(why) => Err(why.failure(API_NAME, hint)),
-        PayloadAnswer::Error { status, body } => Err(match (status, missing) {
+            asked(state),
+            expect
+                .statuses
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(" or ")
+        )))),
+        PayloadAnswer::Relay(_) => Err(StepFailure::Refused(internal(RELAY_REFUSAL))),
+        PayloadAnswer::Unreadable(why) => {
+            Err(StepFailure::Unknown(why.failure(API_NAME, expect.hint)))
+        }
+        PayloadAnswer::Error { status, body } => Err(match (status, expect) {
             // TODO(restart-wording-after-key-reload): say "reload" once a Brenn
             // release converges key files on reload, naming that version.
-            (401, _) => internal(format!(
+            (401, _) => StepFailure::Refused(internal(format!(
                 "{API_NAME} refused the app password for this account (HTTP 401): the operator \
                  must replace its key file and restart Brenn"
-            )),
-            (404, Some(missing)) => invalid(format!("no {missing}")),
-            (429, _) => rate_limited(),
+            ))),
+            (
+                404,
+                Expect {
+                    missing: Some(missing),
+                    ..
+                },
+            ) => StepFailure::Refused(invalid(format!("no {missing}"))),
+            (
+                412,
+                Expect {
+                    stale: Some(stale), ..
+                },
+            ) => StepFailure::Refused(internal(format!("{stale} (HTTP 412)"))),
+            (429, _) => StepFailure::Refused(rate_limited()),
             (507, _) => {
                 let found = format!(
                     "{API_NAME} found more than it will return for {} (HTTP 507)",
                     asked(state)
                 );
-                internal(match hint {
+                StepFailure::Unknown(internal(match expect.hint {
                     Some(hint) => format!("{found}; {hint}"),
                     None => found,
-                })
+                }))
             }
             _ => {
                 let answered = format!("{API_NAME} answered HTTP {status} to {}", asked(state));
-                internal(match fastmail_dav::error_condition(&body) {
+                let failure = internal(match fastmail_dav::error_condition(&body) {
                     Some(condition) => format!("{answered}: precondition `{condition}` failed"),
                     None => answered,
-                })
+                });
+                if (400..500).contains(&status) {
+                    StepFailure::Refused(failure)
+                } else {
+                    StepFailure::Unknown(failure)
+                }
             }
         }),
     }
+}
+
+/// [`step_payload`], its failure the request's whatever Fastmail did.
+pub fn payload<T: Tool>(
+    state: &InFlight<T>,
+    outcome: Result<Value, NestedError>,
+    expect: &Expect<'_>,
+) -> Result<Payload, Failure> {
+    step_payload(state, outcome, expect).map_err(StepFailure::failure)
 }
 
 #[cfg(test)]
@@ -121,7 +261,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::testutil::{ics, multistatus, settings};
+    use crate::testutil::{ics, ics_tagged, multistatus, settings, written};
 
     #[derive(Clone, Copy, Debug, PartialEq)]
     struct Probe;
@@ -136,10 +276,24 @@ mod tests {
         }
     }
 
+    const MULTI: Expect<'static> = Expect {
+        statuses: &[207],
+        missing: None,
+        stale: None,
+        hint: None,
+    };
+
+    const GOT: Expect<'static> = Expect {
+        statuses: &[200],
+        missing: None,
+        stale: None,
+        hint: None,
+    };
+
     fn at(method: &str, path: &str) -> InFlight<Probe> {
         let call = Call {
             step: 1,
-            api: dav_call(&settings(), None, method, path, None, None, None),
+            api: api_call(&settings(), None, method, path, None),
         };
         InFlight::new(
             &"r".repeat(32),
@@ -156,16 +310,28 @@ mod tests {
         at("REPORT", "/dav/calendars/user/alice@example.com/work/")
     }
 
+    fn put() -> InFlight<Probe> {
+        at("PUT", "/dav/calendars/user/alice@example.com/work/e1.ics")
+    }
+
+    fn headers(pairs: &[(&str, &str)]) -> std::collections::BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect()
+    }
+
     #[test]
-    fn a_dav_call_carries_its_depth_body_type_and_accept() {
+    fn each_request_carries_its_method_headers_and_body() {
+        let path = "/dav/calendars/user/alice@example.com/work/e1.ics";
         let call = dav_call(
             &settings(),
             Some("alice"),
-            "PROPFIND",
             "/dav/principals/",
-            Some("0"),
-            Some("<x/>".to_owned()),
-            None,
+            DavRequest::Propfind {
+                depth: Depth::Zero,
+                body: "<x/>",
+            },
         );
         assert_eq!(call.method, "PROPFIND");
         assert_eq!(call.path, "/dav/principals/");
@@ -173,111 +339,236 @@ mod tests {
         assert_eq!(call.body, Some(Body::Text("<x/>".to_owned())));
         assert_eq!(
             call.headers,
-            [
-                ("Content-Type".to_owned(), XML_CONTENT_TYPE.to_owned()),
-                ("Depth".to_owned(), "0".to_owned()),
-            ]
-            .into()
+            headers(&[("Content-Type", XML_CONTENT_TYPE), ("Depth", "0")])
         );
         let call = dav_call(
             &settings(),
             None,
-            "GET",
-            "/dav/calendars/user/alice@example.com/work/e1.ics",
-            None,
-            None,
-            Some("text/calendar"),
+            "/c/",
+            DavRequest::Report {
+                depth: Depth::One,
+                body: "<r/>".to_owned(),
+            },
         );
-        assert_eq!(call.body, None);
+        assert_eq!(
+            (call.method.as_str(), call.body),
+            ("REPORT", Some(Body::Text("<r/>".to_owned())))
+        );
+        assert_eq!(call.account, None);
         assert_eq!(
             call.headers,
-            [("Accept".to_owned(), "text/calendar".to_owned())].into()
+            headers(&[("Content-Type", XML_CONTENT_TYPE), ("Depth", "1")])
         );
+        let call = dav_call(
+            &settings(),
+            None,
+            path,
+            DavRequest::Get {
+                accept: "text/calendar",
+            },
+        );
+        assert_eq!((call.method.as_str(), call.body), ("GET", None));
+        assert_eq!(call.headers, headers(&[("Accept", "text/calendar")]));
+        let call = dav_call(
+            &settings(),
+            None,
+            path,
+            DavRequest::Put {
+                content_type: CALENDAR_CONTENT_TYPE,
+                body: "BEGIN:VCALENDAR".to_owned(),
+                when: Precondition::Absent,
+            },
+        );
+        assert_eq!(
+            (call.method.as_str(), call.body),
+            ("PUT", Some(Body::Text("BEGIN:VCALENDAR".to_owned())))
+        );
+        assert_eq!(
+            call.headers,
+            headers(&[
+                ("Content-Type", CALENDAR_CONTENT_TYPE),
+                ("If-None-Match", "*")
+            ])
+        );
+        let call = dav_call(
+            &settings(),
+            None,
+            path,
+            DavRequest::Put {
+                content_type: CALENDAR_CONTENT_TYPE,
+                body: String::new(),
+                when: Precondition::Unchanged("\"t1\""),
+            },
+        );
+        assert_eq!(
+            call.headers,
+            headers(&[
+                ("Content-Type", CALENDAR_CONTENT_TYPE),
+                ("If-Match", "\"t1\"")
+            ])
+        );
+        let call = dav_call(
+            &settings(),
+            None,
+            path,
+            DavRequest::Delete {
+                unchanged: "\"t1\"",
+            },
+        );
+        assert_eq!((call.method.as_str(), call.body), ("DELETE", None));
+        assert_eq!(call.headers, headers(&[("If-Match", "\"t1\"")]));
     }
 
     #[test]
-    fn the_expected_success_is_the_payload() {
-        let read = payload(&report(), multistatus("<x/>"), 207, None, None).unwrap();
+    fn only_a_strong_entity_tag_is_taken() {
+        let read = |etag: Option<&str>| {
+            let answer = payload(&at("GET", "/e.ics"), ics_tagged("x", etag), &GOT).unwrap();
+            super::etag(&answer).map(str::to_owned)
+        };
+        assert_eq!(read(Some("\"abc\"")).as_deref(), Some("\"abc\""));
+        assert_eq!(read(Some("\"\"")).as_deref(), Some("\"\""));
+        let widest = format!("\"{}\"", "a".repeat(ETAG_MAX - 2));
+        assert_eq!(read(Some(&widest)), Some(widest.clone()));
+        for refused in [
+            "W/\"abc\"",
+            "abc",
+            "\"abc",
+            "\"",
+            "\"a\tb\"",
+            &format!("\"{}\"", "a".repeat(ETAG_MAX - 1)),
+        ] {
+            assert_eq!(read(Some(refused)), None, "{refused}");
+        }
+        assert_eq!(read(None), None);
+        let answer = payload(&at("GET", "/e.ics"), ics("x"), &GOT).unwrap();
+        assert_eq!(etag(&answer), None);
+    }
+
+    #[test]
+    fn an_expected_success_is_the_payload() {
+        let read = payload(&report(), multistatus("<x/>"), &MULTI).unwrap();
         assert_eq!((read.status, read.text()), (207, Some("<x/>")));
-        let read = payload(&at("GET", "/e.ics"), ics("BEGIN"), 200, None, None).unwrap();
-        assert_eq!(
-            read.header("Content-Type"),
-            Some("text/calendar; charset=utf-8")
-        );
-        let bytes = payload(&at("GET", "/e.ics"), binary(200, &[0xff]), 200, None, None).unwrap();
+        let read = payload(&at("GET", "/e.ics"), ics("BEGIN"), &GOT).unwrap();
+        assert_eq!(read.header("Content-Type"), Some(CALENDAR_CONTENT_TYPE));
+        let bytes = payload(&at("GET", "/e.ics"), binary(200, &[0xff]), &GOT).unwrap();
         assert_eq!(bytes.body, vec![0xff]);
+        let writes = Expect {
+            statuses: &[200, 201, 204],
+            ..Expect::default()
+        };
+        for status in [200, 201, 204] {
+            let read = step_payload(&put(), written(status, Some("\"t2\"")), &writes).unwrap();
+            assert_eq!(read.status, status);
+            assert!(read.body.is_empty());
+        }
     }
 
     #[test]
-    fn another_success_status_is_internal() {
+    fn another_success_status_is_internal_and_unknown() {
         assert_eq!(
-            payload(&report(), ics("x"), 207, None, None).unwrap_err(),
-            failure(
+            step_payload(&report(), ics("x"), &MULTI).unwrap_err(),
+            StepFailure::Unknown(failure(
                 ErrorKind::Internal,
                 "Fastmail answered HTTP 200 to REPORT \
                  `/dav/calendars/user/alice@example.com/work/`, where 207 was expected"
-            )
+            ))
+        );
+        let writes = Expect {
+            statuses: &[201, 204],
+            ..Expect::default()
+        };
+        assert_eq!(
+            step_payload(&put(), written(200, None), &writes).unwrap_err(),
+            StepFailure::Unknown(failure(
+                ErrorKind::Internal,
+                "Fastmail answered HTTP 200 to PUT \
+                 `/dav/calendars/user/alice@example.com/work/e1.ics`, where 201 or 204 was expected"
+            ))
         );
     }
 
     #[test]
-    fn a_refused_app_password_is_the_operators() {
+    fn a_refused_app_password_is_the_operators_and_refused() {
+        let expect = Expect {
+            missing: Some("calendar"),
+            ..MULTI
+        };
         assert_eq!(
-            payload(&report(), http(401, "no"), 207, Some("calendar"), None).unwrap_err(),
-            failure(
+            step_payload(&report(), http(401, "no"), &expect).unwrap_err(),
+            StepFailure::Refused(failure(
                 ErrorKind::Internal,
                 "Fastmail refused the app password for this account (HTTP 401): the operator \
                  must replace its key file and restart Brenn"
-            )
+            ))
         );
     }
 
     #[test]
     fn a_404_is_the_callers_only_for_a_handle_they_passed() {
+        let expect = Expect {
+            missing: Some("calendar at `/c/`"),
+            ..MULTI
+        };
         assert_eq!(
-            payload(
-                &report(),
-                http(404, ""),
-                207,
-                Some("calendar at `/c/`"),
-                None
-            )
-            .unwrap_err(),
-            failure(ErrorKind::InvalidArgs, "no calendar at `/c/`")
+            step_payload(&report(), http(404, ""), &expect).unwrap_err(),
+            StepFailure::Refused(failure(ErrorKind::InvalidArgs, "no calendar at `/c/`"))
         );
         assert_eq!(
-            payload(
-                &at("PROPFIND", "/dav/principals/"),
-                http(404, ""),
-                207,
-                None,
-                None
-            )
-            .unwrap_err(),
-            failure(
+            step_payload(&at("PROPFIND", "/dav/principals/"), http(404, ""), &MULTI).unwrap_err(),
+            StepFailure::Refused(failure(
                 ErrorKind::Internal,
                 "Fastmail answered HTTP 404 to PROPFIND `/dav/principals/`"
-            )
+            ))
+        );
+    }
+
+    #[test]
+    fn a_412_says_what_changed_only_for_a_call_with_a_precondition() {
+        let expect = Expect {
+            statuses: &[204],
+            stale: Some("the event changed since it was read, so nothing was changed"),
+            ..Expect::default()
+        };
+        assert_eq!(
+            step_payload(&put(), http(412, "<x/>"), &expect).unwrap_err(),
+            StepFailure::Refused(failure(
+                ErrorKind::Internal,
+                "the event changed since it was read, so nothing was changed (HTTP 412)"
+            ))
+        );
+        assert_eq!(
+            step_payload(&put(), http(412, ""), &GOT).unwrap_err(),
+            StepFailure::Refused(failure(
+                ErrorKind::Internal,
+                "Fastmail answered HTTP 412 to PUT \
+                 `/dav/calendars/user/alice@example.com/work/e1.ics`"
+            ))
         );
     }
 
     #[test]
     fn rate_limits_and_oversized_answers_say_what_to_do() {
         assert_eq!(
-            payload(&report(), http(429, ""), 207, None, None)
-                .unwrap_err()
-                .detail,
-            "Fastmail is rate-limiting this deployment (HTTP 429); try again later"
+            step_payload(&report(), http(429, ""), &MULTI).unwrap_err(),
+            StepFailure::Refused(failure(
+                ErrorKind::Internal,
+                "Fastmail is rate-limiting this deployment (HTTP 429); try again later"
+            ))
+        );
+        let hinted = Expect {
+            hint: Some("narrow it"),
+            ..MULTI
+        };
+        assert_eq!(
+            step_payload(&report(), http(507, ""), &hinted).unwrap_err(),
+            StepFailure::Unknown(failure(
+                ErrorKind::Internal,
+                "Fastmail found more than it will return for REPORT \
+                 `/dav/calendars/user/alice@example.com/work/` (HTTP 507); narrow it"
+            ))
         );
         assert_eq!(
-            payload(&report(), http(507, ""), 207, None, Some("narrow it"))
-                .unwrap_err()
-                .detail,
-            "Fastmail found more than it will return for REPORT \
-             `/dav/calendars/user/alice@example.com/work/` (HTTP 507); narrow it"
-        );
-        assert_eq!(
-            payload(&at("PROPFIND", "/h/"), http(507, ""), 207, None, None)
+            payload(&at("PROPFIND", "/h/"), http(507, ""), &MULTI)
                 .unwrap_err()
                 .detail,
             "Fastmail found more than it will return for PROPFIND `/h/` (HTTP 507)"
@@ -290,19 +581,33 @@ mod tests {
             <D:error xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
               <C:valid-filter/><D:responsedescription>secret</D:responsedescription>
             </D:error>"#;
-        let refused = payload(&report(), http(403, body), 207, Some("calendar"), None).unwrap_err();
+        let expect = Expect {
+            missing: Some("calendar"),
+            ..MULTI
+        };
         assert_eq!(
-            refused,
-            failure(
+            step_payload(&report(), http(403, body), &expect).unwrap_err(),
+            StepFailure::Refused(failure(
                 ErrorKind::Internal,
                 "Fastmail answered HTTP 403 to REPORT \
                  `/dav/calendars/user/alice@example.com/work/`: precondition `valid-filter` failed"
-            )
+            ))
         );
-        for (status, body) in [(400, "secret"), (500, "<secret/>"), (405, "")] {
-            let refused = payload(&report(), http(status, body), 207, None, None).unwrap_err();
+        for (status, body, unknown) in [
+            (400, "secret", false),
+            (405, "", false),
+            (409, "", false),
+            (500, "<secret/>", true),
+            (503, "", true),
+        ] {
+            let refused = step_payload(&report(), http(status, body), &MULTI).unwrap_err();
             assert_eq!(
-                refused.detail,
+                matches!(refused, StepFailure::Unknown(_)),
+                unknown,
+                "{status}"
+            );
+            assert_eq!(
+                refused.failure().detail,
                 format!(
                     "Fastmail answered HTTP {status} to REPORT \
                      `/dav/calendars/user/alice@example.com/work/`"
@@ -315,17 +620,17 @@ mod tests {
     fn a_relay_a_cut_answer_and_a_nested_refusal_are_mapped() {
         let relay = Ok(json!({ "error": "credential_invalid" }));
         assert_eq!(
-            payload(&report(), relay, 207, None, None).unwrap_err().kind,
-            ErrorKind::Internal
+            step_payload(&report(), relay, &MULTI).unwrap_err(),
+            StepFailure::Refused(failure(ErrorKind::Internal, RELAY_REFUSAL))
         );
-        let cut = payload(
-            &report(),
-            truncated(207, json!(9_000_000), "<"),
-            207,
-            None,
-            Some("narrow the window"),
-        )
-        .unwrap_err();
+        let hinted = Expect {
+            hint: Some("narrow the window"),
+            ..MULTI
+        };
+        let cut =
+            step_payload(&report(), truncated(207, json!(9_000_000), "<"), &hinted).unwrap_err();
+        assert!(matches!(cut, StepFailure::Unknown(_)), "{cut:?}");
+        let cut = cut.failure();
         assert_eq!(cut.kind, ErrorKind::Internal);
         assert!(
             cut.detail
@@ -333,9 +638,24 @@ mod tests {
             "{}",
             cut.detail
         );
-        let denied =
-            payload(&report(), nested("denied", "no clause"), 207, None, None).unwrap_err();
+        let denied = payload(&report(), nested("denied", "no clause"), &MULTI).unwrap_err();
         assert_eq!(denied.kind, ErrorKind::Denied);
         assert!(denied.detail.contains("REPORT"), "{}", denied.detail);
+    }
+
+    #[test]
+    fn payload_flattens_either_failure() {
+        assert_eq!(
+            payload(&report(), http(429, ""), &MULTI).unwrap_err(),
+            step_payload(&report(), http(429, ""), &MULTI)
+                .unwrap_err()
+                .failure()
+        );
+        assert_eq!(
+            payload(&report(), http(500, ""), &MULTI).unwrap_err(),
+            step_payload(&report(), http(500, ""), &MULTI)
+                .unwrap_err()
+                .failure()
+        );
     }
 }

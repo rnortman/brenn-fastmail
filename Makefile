@@ -65,7 +65,7 @@ check:
 	$(CHANGES) query
 	$(CHANGES) todo query
 	bazel test --config=lint //...
-	bazel build --config=lint --platforms=@brenn//bazel/platforms:wasm32 //fastmail-calendar:fastmail-calendar //fastmail-contacts:fastmail-contacts //fastmail-contacts-write:fastmail-contacts-write //fastmail-mail-read:fastmail-mail-read //fastmail-mail-write:fastmail-mail-write //jmap:fastmail_jmap //dav:fastmail_dav //provider:fastmail_provider
+	bazel build --config=lint --platforms=@brenn//bazel/platforms:wasm32 //fastmail-calendar:fastmail-calendar //fastmail-calendar-write:fastmail-calendar-write //fastmail-contacts:fastmail-contacts //fastmail-contacts-write:fastmail-contacts-write //fastmail-mail-read:fastmail-mail-read //fastmail-mail-write:fastmail-mail-write //jmap:fastmail_jmap //dav:fastmail_dav //provider:fastmail_provider
 	$(SCRUB) tree
 
 .PHONY: build

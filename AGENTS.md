@@ -13,7 +13,8 @@ guide: building, the gate, the layout.
 reading, no HTTP, no credential; `dav/` is its WebDAV and CalDAV
 counterpart. `fastmail-mail-read/`,
 `fastmail-mail-write/`, `fastmail-contacts/` and `fastmail-contacts-write/` are
-the JMAP providers and `fastmail-calendar/` the CalDAV one, `provider/` the
+the JMAP providers and `fastmail-calendar/` and `fastmail-calendar-write/`
+the CalDAV ones, `provider/` the
 plumbing they share,
 their specifications in `spec/`.
 `config/example.brenn` is the deployer's document the README quotes;

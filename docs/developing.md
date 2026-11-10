@@ -84,20 +84,22 @@ pin irrelevant. `make check` prints a notice while the line is in force.
   server's href into a path brenn will send, `src/multistatus.rs` reads a
   multi-status answer (through `roxmltree`, private to the crate),
   `src/caldav.rs` holds the request bodies and their typed readers, and
-  `src/ical.rs` reads iCalendar by hand: content lines, parameters, TEXT
-  values and the shape of a date. Its fixtures are under `dav/fixtures/`.
+  `src/ical.rs` reads and writes iCalendar by hand: content lines,
+  parameters, TEXT values and the shape of a date, with a property that was
+  read and not changed written back as the line it was read from. Its fixtures are under `dav/fixtures/`.
 - `provider/` — `fastmail-provider`, the plumbing the provider components
   share: settings, the `account`, id, keyword and UTC date arguments, the
-  session step and the API call, the DAV call and the mapping of a DAV
-  answer's status (`src/dav.rs`), result bounds including `cut_width`, and
+  session step and the API call, the DAV call with its precondition and the
+  mapping of a DAV answer's status (`src/dav.rs`), a calendar resource's
+  events selected and shown (`src/event.rs`), result bounds including `cut_width`, and
   the mapping of Fastmail's answers onto the request's failure. One target
   serves the components' wasm32 builds and their host tests; its `testutil`
   module carries those tests' fixtures.
 - `spec/` — the components' authored specifications, the module root a
   deployment's `use @fastmail-mail-read::*;`,
   `use @fastmail-mail-write::*;`, `use @fastmail-contacts::*;`,
-  `use @fastmail-contacts-write::*;` and `use @fastmail-calendar::*;`
-  resolve against.
+  `use @fastmail-contacts-write::*;`, `use @fastmail-calendar::*;` and
+  `use @fastmail-calendar-write::*;` resolve against.
 - `fastmail-mail-read/` — the read provider: `src/logic.rs` (arguments, JMAP
   requests, answers and compaction, all host-testable), `src/html.rs` (HTML
   parts as plain text) and `src/lib.rs` (the guest glue).
@@ -117,8 +119,14 @@ pin irrelevant. `make check` prints a notice while the line is in force.
   (arguments, the step machine, requests and failures, all host-testable),
   `src/event.rs` (an event as a window's occurrence and as a full answer,
   with every cap) and `src/lib.rs` (the guest glue).
-- `config/example.brenn` — the deployer's document: the five key providers,
-  the five instances with their clauses and an agent granted the tools.
+- `fastmail-calendar-write/` — the calendar write provider, over CalDAV:
+  `src/logic.rs` (the create, update and delete arguments, the step machine,
+  the new event, requests and failures, all host-testable),
+  `src/resource.rs` (a stored resource's events, the refusal of one with
+  other people on it, and an update's edit of the main event) and
+  `src/lib.rs` (the guest glue, which reads the activation's clock).
+- `config/example.brenn` — the deployer's document: the six key providers,
+  the six instances with their clauses and an agent granted the tools.
   `//:example_fit` compiles it and `//:config_check` lowers it, so the
   example's shape and settings cannot drift from what brenn accepts; neither
   holds the agent's `tool` grants to the tools the instances provide, which

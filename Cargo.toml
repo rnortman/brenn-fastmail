@@ -9,7 +9,7 @@
 # other instance satisfies none of brenn-guest's port bounds. A crate that
 # enables a `serde` feature must not be added here.
 [workspace]
-members = ["dav", "fastmail-calendar", "fastmail-contacts", "fastmail-contacts-write", "fastmail-mail-read", "fastmail-mail-write", "jmap", "provider"]
+members = ["dav", "fastmail-calendar", "fastmail-calendar-write", "fastmail-contacts", "fastmail-contacts-write", "fastmail-mail-read", "fastmail-mail-write", "jmap", "provider"]
 resolver = "3"
 
 # Inherited by every member. Declared even though nothing here is published:

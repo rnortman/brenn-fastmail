@@ -7,6 +7,10 @@ name = "fastmail-calendar"
 version = "0.2.0"
 
 [[package]]
+name = "fastmail-calendar-write"
+version = "0.2.0"
+
+[[package]]
 name = "fastmail-contacts"
 version = "0.2.0"
 

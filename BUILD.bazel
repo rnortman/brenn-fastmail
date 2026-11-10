@@ -41,15 +41,23 @@ buildifier_test(
     workspace = "//:MODULE.bazel",
 )
 
-# The release: five backend packages, `fastmail-calendar`,
-# `fastmail-contacts`, `fastmail-contacts-write`, `fastmail-mail-read` and
-# `fastmail-mail-write`, each built from its component artifact and its
-# authored specification.
+# The release: six backend packages, `fastmail-calendar`,
+# `fastmail-calendar-write`, `fastmail-contacts`, `fastmail-contacts-write`,
+# `fastmail-mail-read` and `fastmail-mail-write`, each built from its component
+# artifact and its authored specification.
 component_package(
     name = "fastmail-calendar_package",
     component = "//fastmail-calendar:component",
     package = "fastmail-calendar",
     spec = "//spec:fastmail-calendar.brenn",
+    world = "brenn:processor",
+)
+
+component_package(
+    name = "fastmail-calendar-write_package",
+    component = "//fastmail-calendar-write:component",
+    package = "fastmail-calendar-write",
+    spec = "//spec:fastmail-calendar-write.brenn",
     world = "brenn:processor",
 )
 
@@ -94,6 +102,12 @@ grant_parity_test(
 )
 
 grant_parity_test(
+    name = "fastmail-calendar-write_grant_parity",
+    component = "//fastmail-calendar-write:component",
+    spec = "//spec:fastmail-calendar-write.brenn",
+)
+
+grant_parity_test(
     name = "fastmail-contacts_grant_parity",
     component = "//fastmail-contacts:component",
     spec = "//spec:fastmail-contacts.brenn",
@@ -121,6 +135,7 @@ deployed_components_test(
     name = "deployed_components_test",
     manifest = "deployed-components.txt",
     packages = [
+        ":fastmail-calendar-write_package",
         ":fastmail-calendar_package",
         ":fastmail-contacts-write_package",
         ":fastmail-contacts_package",
@@ -137,6 +152,7 @@ component_bundle(
     name = "bundle",
     manifest = "deployed-components.txt",
     packages = [
+        ":fastmail-calendar-write_package",
         ":fastmail-calendar_package",
         ":fastmail-contacts-write_package",
         ":fastmail-contacts_package",

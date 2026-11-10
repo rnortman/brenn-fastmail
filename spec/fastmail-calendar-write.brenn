@@ -1,0 +1,69 @@
+/// Each user's Fastmail calendars written for an assistant over CalDAV
+/// (RFC 4791, RFC 5545 for the events), as native tools, each answered by
+/// `api-request` calls against the `api_key_provider` the instance names.
+/// That provider holds one account per user, or several, each a Fastmail app
+/// password that may write calendars, as a `Basic` header value;
+/// `api-request` picks the calling user's, and attaches it host-side, so no
+/// password ever reaches this component. The tools put a new event on a
+/// calendar, change an event's summary, description, location or time, and
+/// delete an event. Nothing here sends mail: an event is written with no
+/// organizer and no attendees, and an event with an organizer or attendees
+/// is never changed or deleted. One occurrence of a series is never changed
+/// or deleted, nor a series' time or rule changed.
+///
+/// Every capability is load-bearing: `config` names the provider and the
+/// host, without which no call can be addressed; `store` carries each
+/// request's state between the activation that issues its nested call and
+/// the one that receives the answer; `tools` is the authority to call
+/// `api-request`; `provides` is what makes the tools exist; `log` records each
+/// step's tool, status and size — never a body or a header.
+///
+/// The instance's `config = { ... };` map is flat: `provider` is the
+/// `api_key_provider` name, whose `account` blocks bind each user's app
+/// password; `host` is the `host[:port]` Fastmail's CalDAV is served on
+/// (`caldav.fastmail.com`), which `api-request` matches against that
+/// provider's `api_hosts`. A missing or malformed key fails every activation,
+/// naming the key, and so does an activation without a clock. The instance's
+/// clauses must admit `GET`, `PUT` and `DELETE` of an event path, a path
+/// below a calendar. A deployment withholds deletion by dropping the
+/// `DELETE` clause and the agent's `fastmail-calendar-event-delete` grant. A
+/// clause's `path` is not a boundary between a collection's members.
+///
+/// Size the instance's result inbox with a `channel at
+/// "brenn:tool-results/<slug>"` block: each live request has at most one
+/// nested call outstanding, so the window must hold Σ max_concurrency results,
+/// twice over for a re-delivered result — `retain_depth ≥ 2 × Σ`, rounded up
+/// to a power of two. This class's Σ is 6, so the family default of 16 holds
+/// it.
+///
+/// Every nested answer crosses the bus as a tool result and must fit
+/// `[messaging] max_body_bytes` (64 KiB default); a write's answer has no
+/// body, so it always does, and an event over it cannot be read and so is
+/// not changed. An update writes the event back whole in one nested call,
+/// whose arguments Brenn caps at 64 KiB, so an event over 60,000 bytes as
+/// the call carries it (escaped as JSON: each line end counts four bytes,
+/// each `"` and `\` two) cannot be written back.
+component FastmailCalendarWrite {
+  abi = processor;
+  requires = [log, store, config, tools, provides];
+  in tool-results;
+  in tool-requests;
+  provide fastmail-calendar-event-create {
+    mcp_name = "FastmailCalendarEventCreate";
+    description = "Create an event on one of the user's Fastmail calendars. No mail is sent: the event has no organizer and no attendees, and none can be added here. `account` names which of the user's Fastmail accounts, by the name the operator gave it; omit it for the user's default or only account. A refusal listing account names means several are configured and none is the default: pass one. `calendar` (required) is a `calendar` path from `FastmailCalendars`. `summary` (required) is the title. `start` and `end` (required) are of one kind: both dates (2026-11-02), an all-day event, with `end` the day after the last day; both UTC instants (2026-11-02T09:00:00Z), with no `time_zone`; or both local times (2026-11-02T09:00:00) with `time_zone`, an IANA zone name such as Europe/London (at most 64 characters), which is named, not looked up. `end` must be later than `start`. `description` (up to 8000 characters, line breaks allowed) and `location` are optional; `summary` and `location` are one line of up to 1000 characters. `recurrence` makes the event repeat: 1 to 3 distinct `RRULE:` lines (RRULE:FREQ=WEEKLY;BYDAY=MO), each up to 500 characters of letters, digits and `=;,+-`; no RDATE or EXDATE. A repeating event with a time needs `time_zone`, so it keeps its time of day across daylight-saving changes. A rule's UNTIL must be in the form `start` has: a date (20261231) for an all-day event, else a UTC instant (20261231T235959Z). Fastmail is not asked whether it knows the zone: after creating an event in a zone, confirm its time with FastmailCalendarEvents, which shows the instant Fastmail computed. Answers `event`, the new event's path (the handle the other calendar tools take), and its `uid`. A refusal saying no calendar is at the path means `calendar` is wrong. A refusal naming the precondition `valid-calendar-data` means Fastmail rejected the event as written: check `time_zone` and `recurrence`; one naming `supported-calendar-component` means the calendar does not hold events. A refusal saying an event already has the name chosen created nothing: ask again. A refusal saying Fastmail refused the app password (HTTP 401) is the operator's to fix: the account's key file. If the answer is lost the event may have been created: look for it with FastmailCalendarEvents in its window before asking again, or the user has two.";
+    input_schema = """{ "type": "object", "properties": { "calendar": { "type": "string", "pattern": "^/([^/?#]+/)*$" }, "summary": { "type": "string", "minLength": 1, "maxLength": 1000, "pattern": "[^\\s\\u0085]" }, "start": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2}:[0-9]{2}:[0-9]{2}Z?)?$" }, "end": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2}:[0-9]{2}:[0-9]{2}Z?)?$" }, "time_zone": { "type": "string", "pattern": "^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$" }, "description": { "type": "string", "minLength": 1, "maxLength": 8000, "pattern": "[^\\s\\u0085]" }, "location": { "type": "string", "minLength": 1, "maxLength": 1000, "pattern": "[^\\s\\u0085]" }, "recurrence": { "type": "array", "minItems": 1, "maxItems": 3, "uniqueItems": true, "items": { "type": "string", "pattern": "^RRULE:[A-Za-z0-9=;,+-]{1,500}$" } }, "account": { "type": "string", "pattern": "^[a-z]([a-z0-9-]{0,253}[a-z0-9])?$" } }, "required": ["calendar", "summary", "start", "end"], "additionalProperties": false }""";
+    max_concurrency = 2;
+  }
+  provide fastmail-calendar-event-update {
+    mcp_name = "FastmailCalendarEventUpdate";
+    description = "Change an event on one of the user's Fastmail calendars: its summary, description, location or time. The event is read, changed and written back only if nobody changed it in between; every line it holds that this call does not name is written back as it was read. No mail is sent: an event with an organizer or attendees is refused, and is changed in Fastmail. `account` names which of the user's Fastmail accounts, by the name the operator gave it; omit it for the user's default or only account. A refusal listing account names means several are configured and none is the default: pass one. `event` (required) is an `event` path from `FastmailCalendarEvents`. Give at least one change: `summary` and `location` (one line of up to 1000 characters), `description` (up to 8000 characters, line breaks allowed), or `start` and `end` together. No field can be cleared. A new description drops the event's formatted (HTML) copy of it, and a new location drops the map position stored beside the old one. `start` and `end` are of one kind: both dates (2026-11-02), an all-day event, with `end` the day after the last day; both UTC instants (2026-11-02T09:00:00Z), with no `time_zone`; or both local times (2026-11-02T09:00:00) with `time_zone`, an IANA zone name such as Europe/London (at most 64 characters), which is named, not looked up. `end` must be later than `start`; `time_zone` is given only with them. A new time replaces a duration the event had. A recurring event's summary, description and location are changed for the whole series; its time and rule cannot be changed here, nor one occurrence: change those in Fastmail. An occurrence that was already changed apart from the series keeps its own text, and the answer counts such occurrences in `overrides_unchanged`. A resource holding only changed occurrences is refused. An event over 60,000 bytes as the call carries it (escaped as JSON: each line end counts four bytes, each `\"` and `\\` two) is too large to write back and is refused, the refusal stating both sizes: change it in Fastmail. Answers `event`, `updated` (the fields changed) and, for a series, `overrides_unchanged`. A refusal saying no event is at the path means `event` is wrong or the event was deleted. A refusal saying the event changed since it was read changed nothing: read it again with FastmailCalendarEvent and ask again. A refusal saying the event has no entity tag it can be matched by means Fastmail's answer cannot be written back safely, and nothing was changed. A refusal naming the precondition `valid-calendar-data` means Fastmail rejected the event as written: check `time_zone`. A refusal saying Fastmail refused the app password (HTTP 401) is the operator's to fix: the account's key file. If the answer is lost the change may already have been applied: read the event with FastmailCalendarEvent before asking again; asking again with the same arguments is safe.";
+    input_schema = """{ "type": "object", "properties": { "event": { "type": "string", "pattern": "^(/[^/?#]+)+$" }, "summary": { "type": "string", "minLength": 1, "maxLength": 1000, "pattern": "[^\\s\\u0085]" }, "description": { "type": "string", "minLength": 1, "maxLength": 8000, "pattern": "[^\\s\\u0085]" }, "location": { "type": "string", "minLength": 1, "maxLength": 1000, "pattern": "[^\\s\\u0085]" }, "start": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2}:[0-9]{2}:[0-9]{2}Z?)?$" }, "end": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2}:[0-9]{2}:[0-9]{2}Z?)?$" }, "time_zone": { "type": "string", "pattern": "^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$" }, "account": { "type": "string", "pattern": "^[a-z]([a-z0-9-]{0,253}[a-z0-9])?$" } }, "required": ["event"], "additionalProperties": false }""";
+    max_concurrency = 2;
+  }
+  provide fastmail-calendar-event-delete {
+    mcp_name = "FastmailCalendarEventDelete";
+    description = "Delete an event from one of the user's Fastmail calendars, for good: it cannot be brought back from here. The event is read first and deleted only if nobody changed it in between. No mail is sent: an event with an organizer or attendees is refused, and is deleted in Fastmail. `account` names which of the user's Fastmail accounts, by the name the operator gave it; omit it for the user's default or only account. A refusal listing account names means several are configured and none is the default: pass one. `event` (required) is an `event` path from `FastmailCalendarEvents`. A recurring event is deleted whole, every occurrence with it, and only with `series: true`; one occurrence cannot be deleted here: delete it in Fastmail. `series: true` on an event that does not repeat deletes it: the flag is a permission, not a claim. Answers `deleted: true`, `event`, the event's `summary` (cut at 300 characters) and `start` as FastmailCalendarEvent shows them, and `series: true` when every occurrence of a series was deleted. A refusal saying no event is at the path means `event` is wrong or the event is already deleted. A refusal saying the event changed since it was read deleted nothing: read it again with FastmailCalendarEvent and ask again. A refusal saying the event has no entity tag it can be matched by means it cannot be deleted safely, and nothing was deleted. A refusal saying Fastmail refused the app password (HTTP 401) is the operator's to fix: the account's key file; one denied by the deployment's clause means this deployment does not let the assistant delete events. If the answer is lost the event may already be deleted: asking again is safe, since a deleted event is refused as no event.";
+    input_schema = """{ "type": "object", "properties": { "event": { "type": "string", "pattern": "^(/[^/?#]+)+$" }, "series": { "type": "boolean" }, "account": { "type": "string", "pattern": "^[a-z]([a-z0-9-]{0,253}[a-z0-9])?$" } }, "required": ["event"], "additionalProperties": false }""";
+    max_concurrency = 2;
+  }
+}

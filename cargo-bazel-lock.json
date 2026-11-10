@@ -1,8 +1,28 @@
 {
-  "checksum": "bd549da0148ae0cf22955bc90a785ead5e45d59f006e7667aacd69821f6f3c2d",
+  "checksum": "6e95b9b9122e17dfa8233c88593fb7b9ecd332a0192b9db7a7f1575bf4856996",
   "crates": {
     "fastmail-calendar 0.2.0": {
       "name": "fastmail-calendar",
+      "version": "0.2.0",
+      "package_url": null,
+      "repository": null,
+      "targets": [],
+      "library_target_name": null,
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "edition": "2024",
+        "version": "0.2.0"
+      },
+      "license": "Apache-2.0",
+      "license_ids": [
+        "Apache-2.0"
+      ],
+      "license_file": null
+    },
+    "fastmail-calendar-write 0.2.0": {
+      "name": "fastmail-calendar-write",
       "version": "0.2.0",
       "package_url": null,
       "repository": null,
@@ -313,6 +333,7 @@
   "binary_crates": [],
   "workspace_members": {
     "fastmail-calendar 0.2.0": "fastmail-calendar",
+    "fastmail-calendar-write 0.2.0": "fastmail-calendar-write",
     "fastmail-contacts 0.2.0": "fastmail-contacts",
     "fastmail-contacts-write 0.2.0": "fastmail-contacts-write",
     "fastmail-dav 0.2.0": "dav",
